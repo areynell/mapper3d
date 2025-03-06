@@ -1,0 +1,65 @@
+cmake_minimum_required(VERSION 3.24)
+project(mapper3d)
+
+set(CMAKE_CXX_STANDARD 17)
+
+# Find dependencies
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(Eigen3 REQUIRED)
+find_package(PCL REQUIRED)
+find_package(pcl_conversions REQUIRED)
+find_package(Sophus REQUIRED)
+find_package(teaserpp REQUIRED)
+find_package(robin REQUIRED)
+find_package(kiss_matcher REQUIRED)
+
+# Include directories
+include_directories(include
+  ${PCL_INCLUDE_DIRS}
+  ${Sophus_INCLUDE_DIRS}
+)
+
+# Create library
+add_library(mapper3d src/mapper3d.cpp)
+target_link_libraries(mapper3d
+  ${PCL_LIBRARIES}
+  Sophus::Sophus
+  Eigen3::Eigen
+  TBB::tbb
+  teaserpp::teaser_registration
+  teaserpp::teaser_io
+  robin::robin
+  kiss_matcher::kiss_matcher_core
+)
+target_include_directories(mapper3d
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+# Create executable
+add_executable(mapper3d_node src/mapper3d_node.cpp)
+target_link_libraries(mapper3d_node mapper3d)
+ament_target_dependencies(mapper3d_node
+  rclcpp
+  sensor_msgs
+  tf2
+  tf2_ros
+  pcl_conversions
+)
+
+# Install
+install(TARGETS
+  mapper3d_node
+  mapper3d
+  EXPORT export_mapper3d
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+ament_package()

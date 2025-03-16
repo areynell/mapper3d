@@ -11,6 +11,8 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(rosbag2_cpp REQUIRED)
+
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
 find_package(pcl_conversions REQUIRED)
@@ -25,7 +27,6 @@ include_directories(include
   ${Sophus_INCLUDE_DIRS}
 )
 
-# Create library
 add_library(mapper3d src/mapper3d.cpp)
 target_link_libraries(mapper3d
   ${PCL_LIBRARIES}
@@ -43,7 +44,8 @@ target_include_directories(mapper3d
     $<INSTALL_INTERFACE:include>
 )
 
-# Create executable
+
+# Create executables
 add_executable(mapper3d_node src/mapper3d_node.cpp)
 target_link_libraries(mapper3d_node mapper3d)
 ament_target_dependencies(mapper3d_node
@@ -54,10 +56,18 @@ ament_target_dependencies(mapper3d_node
   pcl_conversions
 )
 
-# Install
+add_executable(kitti_to_ros2_bag src/kitti_to_ros2_bag.cpp)
+ament_target_dependencies(kitti_to_ros2_bag
+  rclcpp
+  sensor_msgs
+  rosbag2_cpp
+)
+
+# Install targets
 install(TARGETS
   mapper3d_node
   mapper3d
+  kitti_to_ros2_bag
   EXPORT export_mapper3d
   DESTINATION lib/${PROJECT_NAME}
 )

@@ -27,8 +27,7 @@ Mapper3D::Mapper3D(const Mapper3DParams& params)
       kiss_matcher_(kiss_config_),
       constrain_pose_to_se2_(false),
       viewer_initialized_(false),
-      max_point_cloud_history_(50),
-      new_viz_data_available_(false) {
+      max_point_cloud_history_(50) {
     std::cout << "GICP maximum correspondence distance: " << gicp_.getMaxCorrespondenceDistance() << "\n";
     // gicp_.setMaxCorrespondenceDistance(0.1);
 
@@ -88,25 +87,28 @@ void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) 
 
     const auto kiss_matcher_correspondences = kiss_matcher_.getFinalCorrespondences();
 
-    {
-        Timer timer("Mapper3D::spin_once locked viz_mutex_ for");
-
-        PointCloudFrame frame;
-        frame.cloud = point_cloud_;
-        frame.pose = sensor_pose_;
-
-        std::unique_lock<std::mutex> lock(viz_mutex_);
-        aligned_point_cloud_frames_.push_back(frame);
-        if (aligned_point_cloud_frames_.size() > max_point_cloud_history_) {
-            aligned_point_cloud_frames_.pop_front();
-        }
-        new_viz_data_available_ = true;
-        viz_cv_.notify_one();
-    }
+    enqueue_visualization_data(point_cloud_, sensor_pose_);
 
     prev_point_cloud_ = point_cloud_;
     prev_point_cloud_vec_ = point_cloud_vec;
     prev_sensor_pose_ = sensor_pose_;
+}
+
+void Mapper3D::enqueue_visualization_data(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
+                                          const Sophus::SE3d& sensor_pose) {
+    auto frame = std::make_shared<PointCloudFrame>();
+    frame->point_cloud = point_cloud;
+    frame->sensor_pose = sensor_pose;
+
+    {
+        std::scoped_lock<std::mutex> lock(viz_mutex_);
+        // Prevent queue from growing too large if visualization can't keep up
+        while (viz_queue_.size() >= max_point_cloud_history_) {
+            viz_queue_.pop();
+        }
+        viz_queue_.push(frame);
+    }
+    viz_cv_.notify_one();
 }
 
 Sophus::SE3d Mapper3D::constrain_pose_to_se2(const Sophus::SE3d& pose) {
@@ -266,41 +268,37 @@ Sophus::SE3d Mapper3D::eigen_to_sophus(const Eigen::Matrix4d& eigen_matrix) {
 
 void Mapper3D::visualization_thread_func() {
     while (run_viz_thread_) {
-        // Timer timer("Mapper3D::visualization_thread_func loop time");
-
-        std::deque<PointCloudFrame> aligned_point_cloud_frames_copy;
+        std::shared_ptr<PointCloudFrame> frame;
 
         {
-            // Timer timer2("Mapper3D::visualization_thread_func locked viz_mutex_ for");
-
             std::unique_lock<std::mutex> lock(viz_mutex_);
-            viz_cv_.wait(lock, [this]() { return new_viz_data_available_ || !run_viz_thread_; });
+            viz_cv_.wait(lock, [this]() { return !viz_queue_.empty() || !run_viz_thread_; });
 
             if (!run_viz_thread_) {
                 break;
             }
 
-            if (new_viz_data_available_ && !aligned_point_cloud_frames_.empty()) {
-                Timer timer3("Mapper3D::visualization_thread_func copy aligned_point_cloud_frames_");
-                // Make a copy of the data we need while holding the lock
-                aligned_point_cloud_frames_copy = aligned_point_cloud_frames_;
-                new_viz_data_available_ = false;
+            if (!viz_queue_.empty()) {
+                frame = viz_queue_.front();
+                viz_queue_.pop();
             }
         }
 
-        // Visualize using local copy without holding the lock
-        if (!aligned_point_cloud_frames_copy.empty()) {
-            visualize_aligned_point_clouds(aligned_point_cloud_frames_copy, 1920, 1080, 100.0);
+        if (frame) {
+            visualize_aligned_point_clouds(frame->point_cloud, frame->sensor_pose, 1920, 1080, 100.0);
         }
     }
 }
 
-void Mapper3D::visualize_aligned_point_clouds(const std::deque<PointCloudFrame>& aligned_point_cloud_frames,
+void Mapper3D::visualize_aligned_point_clouds(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, Sophus::SE3d& pose,
                                               const size_t h_res, const size_t v_res, const double view_height) {
     Timer timer("Mapper3D::visualize_aligned_point_clouds");
 
     // Initialize viewer if needed
     if (!viewer_initialized_) {
+        point_cloud_ids_.clear();
+        point_cloud_counter_ = 0;
+
         viewer_ = pcl::visualization::PCLVisualizer::Ptr(new pcl::visualization::PCLVisualizer("3D Viewer"));
         viewer_->setBackgroundColor(0, 0, 0);
         viewer_->initCameraParameters();
@@ -308,35 +306,38 @@ void Mapper3D::visualize_aligned_point_clouds(const std::deque<PointCloudFrame>&
         viewer_initialized_ = true;
     }
 
-    // Remove existing point clouds and coordinate axes
-    viewer_->removeAllPointClouds();
+    // If we've reached the maximum number of point clouds, remove the oldest one
+    if (point_cloud_ids_.size() >= max_point_cloud_history_ && !point_cloud_ids_.empty()) {
+        std::string oldest_id = point_cloud_ids_.front();
+        viewer_->removePointCloud(oldest_id);
+        point_cloud_ids_.pop_front();
+    }
+
+    // Create a unique ID for current point cloud
+    const std::string point_cloud_id = "point_cloud_" + std::to_string(point_cloud_counter_++);
+    point_cloud_ids_.push_back(point_cloud_id);
+
+    // Transform current point cloud from sensor frame to world frame
+    pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_point_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    const Eigen::Matrix4f transform = pose.matrix().cast<float>();
+    pcl::transformPointCloud(*point_cloud, *transformed_point_cloud, transform);
+
+    // Add current point cloud to viewer
+    const pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> color_handler(transformed_point_cloud, 255,
+                                                                                        255, 255);
+    viewer_->addPointCloud(transformed_point_cloud, color_handler, point_cloud_id);
+    viewer_->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, point_cloud_id);
+
+    // Update or add coordinate system
     viewer_->removeAllCoordinateSystems();
+    const Eigen::Affine3f current_transform(pose.matrix().cast<float>());
+    viewer_->addCoordinateSystem(1.0, current_transform);
 
-    // Add each point cloud to viewer
-    size_t idx = 0;
-    for (const auto& frame : aligned_point_cloud_frames) {
-        pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-        Eigen::Matrix4f transform = frame.pose.matrix().cast<float>();
-        pcl::transformPointCloud(*frame.cloud, *transformed_cloud, transform);
-
-        std::string cloud_id = "cloud_" + std::to_string(idx);
-        pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> color_handler(transformed_cloud, 255, 255, 255);
-        viewer_->addPointCloud(transformed_cloud, color_handler, cloud_id);
-        viewer_->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, cloud_id);
-        idx++;
-    }
-
-    if (!aligned_point_cloud_frames.empty()) {
-        // Add coordinate axis at the current sensor pose
-        Eigen::Affine3f current_transform(aligned_point_cloud_frames.back().pose.matrix().cast<float>());
-        viewer_->addCoordinateSystem(1.0, current_transform);
-
-        // Set camera position
-        Eigen::Vector3d position = aligned_point_cloud_frames.back().pose.translation();
-        viewer_->setCameraPosition(position.x(), position.y(), position.z() + view_height,  // Camera position
-                                   position.x(), position.y(), position.z(),                // Look at point
-                                   0.0, 1.0, 0.0);                                          // Up vector
-    }
+    // Set viewer camera position
+    const Eigen::Vector3d position = pose.translation();
+    viewer_->setCameraPosition(position.x(), position.y(), position.z() + view_height,  // Camera position
+                               position.x(), position.y(), position.z(),                // Look at point
+                               0.0, 1.0, 0.0);                                          // Up vector
 
     viewer_->spinOnce();
 }

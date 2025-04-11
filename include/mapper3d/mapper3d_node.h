@@ -17,6 +17,14 @@
 
 #include "mapper3d/mapper3d.h"
 
+struct VisualizationData {
+    pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud;
+    std::vector<Eigen::Vector3f> kiss_matcher_point_cloud;
+    std::vector<Eigen::Vector3f> kiss_matcher_keypoint_cloud;
+    Sophus::SE3d sensor_pose;
+    rclcpp::Time timestamp;
+};
+
 struct Mapper3DNodeParams {
     int sub_queue_size = 1;
     int pub_queue_size = 1;
@@ -53,6 +61,8 @@ class Mapper3DNode : public rclcpp::Node {
     void broadcast_transform(const Sophus::SE3d &transform, const std::string &frame_id,
                              const std::string &child_frame_id, const rclcpp::Time &timestamp);
 
+    void enqueue_visualization_data(const rclcpp::Time &timestamp);
+
     void visualization_thread_func();
 
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr point_cloud_sub_;
@@ -72,16 +82,13 @@ class Mapper3DNode : public rclcpp::Node {
     std::thread viz_thread_;
     std::mutex viz_mutex_;
     std::condition_variable viz_cv_;
+    size_t max_viz_queue_size_;  // Prevent unlimited backlog
     bool run_viz_thread_;
-    bool new_viz_data_available_;
-
-    pcl::PointCloud<pcl::PointXYZ>::Ptr viz_point_cloud_;
-    std::vector<Eigen::Vector3f> viz_kiss_matcher_point_cloud_;
-    std::vector<Eigen::Vector3f> viz_kiss_matcher_keypoint_cloud_;
-    Sophus::SE3d viz_sensor_pose_;
-    rclcpp::Time viz_timestamp_;
+    std::queue<std::shared_ptr<VisualizationData>> viz_queue_;
 
     nav_msgs::msg::Path pose_trajectory_;
 
     Sophus::SE3d map_to_sensor_transform_;
+
+    rclcpp::Time prev_timestamp_;
 };

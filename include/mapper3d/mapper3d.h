@@ -10,6 +10,7 @@
 #include <deque>
 #include <kiss_matcher/FasterPFH.hpp>
 #include <kiss_matcher/KISSMatcher.hpp>
+#include <queue>
 #include <sophus/se3.hpp>
 
 namespace mapper3d {
@@ -19,8 +20,8 @@ struct Mapper3DParams {
 };
 
 struct PointCloudFrame {
-    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud;
-    Sophus::SE3d pose;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud;
+    Sophus::SE3d sensor_pose;
 };
 
 class Mapper3D {
@@ -59,9 +60,12 @@ class Mapper3D {
                                    const pcl::PointCloud<pcl::PointXYZ>::Ptr target,
                                    const Sophus::SE3d &initial_transform_guess);
 
+    void enqueue_visualization_data(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
+                                    const Sophus::SE3d &sensor_pose);
+
     void visualization_thread_func();
 
-    void visualize_aligned_point_clouds(const std::deque<PointCloudFrame> &aligned_point_cloud_frames,
+    void visualize_aligned_point_clouds(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, Sophus::SE3d &pose,
                                         const size_t h_res, const size_t v_res, const double view_height);
 
     // Sophus::SE3d predict_sensor_motion();
@@ -100,7 +104,9 @@ class Mapper3D {
     std::mutex viz_mutex_;
     std::condition_variable viz_cv_;
     bool run_viz_thread_;
-    bool new_viz_data_available_;
+    std::queue<std::shared_ptr<PointCloudFrame>> viz_queue_;
+    std::deque<std::string> point_cloud_ids_;
+    size_t point_cloud_counter_;
 };
 
 }  // namespace mapper3d

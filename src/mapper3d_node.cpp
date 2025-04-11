@@ -3,6 +3,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <tf2/convert.h>
 
+#include <cstdlib>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <mutex>
 #include <rclcpp/logging.hpp>
@@ -20,7 +21,9 @@ Mapper3DNode::Mapper3DNode(const Mapper3DNodeParams &params)
       base_frame_id_(params.base_frame_id),
       sensor_frame_id_(params.sensor_frame_id),
       run_viz_thread_(true),
-      map_to_sensor_transform_(Sophus::SE3d()) {
+      max_viz_queue_size_(5),
+      map_to_sensor_transform_(Sophus::SE3d()),
+      prev_timestamp_(rclcpp::Time(0, 0, RCL_ROS_TIME)) {
     RCLCPP_INFO(this->get_logger(), "Initializing Mapper3DNode...");
 
     point_cloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -46,6 +49,14 @@ Mapper3DNode::Mapper3DNode(const Mapper3DNodeParams &params)
 void Mapper3DNode::pointcloud_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
     Timer timer("Mapper3DNode::pointcloud_callback");
 
+    const rclcpp::Time msg_time(msg->header.stamp, RCL_ROS_TIME);
+    if (msg_time <= prev_timestamp_) {
+        RCLCPP_ERROR(this->get_logger(), "Received point cloud with non-increasing timestamp.");
+        // exit(EXIT_FAILURE);
+        // return;
+    }
+    prev_timestamp_ = msg_time;
+
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::fromROSMsg(*msg, *cloud);
 
@@ -54,19 +65,30 @@ void Mapper3DNode::pointcloud_callback(const sensor_msgs::msg::PointCloud2::Shar
 
     broadcast_transform(map_to_sensor_transform_, map_frame_id_, sensor_frame_id_, msg->header.stamp);
 
-    // TODO: Improve this method for copying data to the visualization thread
-    {
-        std::scoped_lock<std::mutex> lock(viz_mutex_);
-        viz_point_cloud_ = mapper3d_.point_cloud();
-        viz_kiss_matcher_point_cloud_ = mapper3d_.kiss_matcher_point_cloud();
-        viz_kiss_matcher_keypoint_cloud_ = mapper3d_.kiss_matcher_keypoint_cloud();
-        viz_sensor_pose_ = mapper3d_.sensor_pose();
-        viz_timestamp_ = msg->header.stamp;
-        new_viz_data_available_ = true;
-    }
-    viz_cv_.notify_one();
+    enqueue_visualization_data(msg_time);
 
     std::cout << "--------------------------------------------------------------------------" << std::endl;
+}
+
+void Mapper3DNode::enqueue_visualization_data(const rclcpp::Time &timestamp) {
+    // Instantiate visualization data struct
+    auto viz_data = std::make_shared<VisualizationData>();
+    viz_data->point_cloud = mapper3d_.point_cloud();
+    viz_data->kiss_matcher_point_cloud = mapper3d_.kiss_matcher_point_cloud();
+    viz_data->kiss_matcher_keypoint_cloud = mapper3d_.kiss_matcher_keypoint_cloud();
+    viz_data->sensor_pose = mapper3d_.sensor_pose();
+    viz_data->timestamp = timestamp;
+
+    // Add visualization data to queue with lock
+    {
+        std::scoped_lock<std::mutex> lock(viz_mutex_);
+        // Prevent queue from growing too large if visualization can't keep up
+        while (viz_queue_.size() >= max_viz_queue_size_) {
+            viz_queue_.pop();
+        }
+        viz_queue_.push(viz_data);
+    }
+    viz_cv_.notify_one();
 }
 
 void Mapper3DNode::broadcast_transform(const Sophus::SE3d &transform, const std::string &frame_id,
@@ -89,31 +111,31 @@ void Mapper3DNode::broadcast_transform(const Sophus::SE3d &transform, const std:
 }
 
 void Mapper3DNode::visualization_thread_func() {
-    pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud_to_publish;
-    pcl::PointCloud<pcl::PointXYZ>::Ptr keypoint_cloud_to_publish;
-    Sophus::SE3d sensor_pose_to_publish;
-    std::string frame_id;
-    rclcpp::Time timestamp;
-
     while (run_viz_thread_) {
+        std::shared_ptr<VisualizationData> viz_data;
+
         {
             std::unique_lock<std::mutex> lock(viz_mutex_);
-            viz_cv_.wait(lock, [this]() { return new_viz_data_available_ || !run_viz_thread_; });
+            viz_cv_.wait(lock, [this]() { return !viz_queue_.empty() || !run_viz_thread_; });
+
             if (!run_viz_thread_) {
                 break;
             }
 
-            // point_cloud_to_publish = viz_point_cloud_;
-            point_cloud_to_publish = mapper3d::utils::point_vec_to_cloud(viz_kiss_matcher_point_cloud_);
-            keypoint_cloud_to_publish = mapper3d::utils::point_vec_to_cloud(viz_kiss_matcher_keypoint_cloud_);
-            sensor_pose_to_publish = viz_sensor_pose_;
-            timestamp = viz_timestamp_;
-            new_viz_data_available_ = false;
+            if (!viz_queue_.empty()) {
+                viz_data = viz_queue_.front();
+                viz_queue_.pop();
+            }
         }
 
-        publish_point_cloud(point_cloud_to_publish, sensor_frame_id_, timestamp);
-        publish_keypoint_cloud(keypoint_cloud_to_publish, sensor_frame_id_, timestamp);
-        publish_pose_trajectory(sensor_pose_to_publish, map_frame_id_, timestamp);
+        if (viz_data) {
+            auto kiss_matcher_point_cloud = mapper3d::utils::point_vec_to_cloud(viz_data->kiss_matcher_point_cloud);
+            auto kiss_matcher_keypoints = mapper3d::utils::point_vec_to_cloud(viz_data->kiss_matcher_keypoint_cloud);
+
+            publish_point_cloud(kiss_matcher_point_cloud, sensor_frame_id_, viz_data->timestamp);
+            publish_keypoint_cloud(kiss_matcher_keypoints, sensor_frame_id_, viz_data->timestamp);
+            publish_pose_trajectory(viz_data->sensor_pose, map_frame_id_, viz_data->timestamp);
+        }
     }
 }
 

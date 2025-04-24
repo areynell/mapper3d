@@ -1,0 +1,3 @@
+[submodule "3rdparty/small_gicp"]
+	path = 3rdparty/small_gicp
+	url = https://github.com/koide3/small_gicp.git

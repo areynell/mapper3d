@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.22)
 
 # set(CMAKE_CXX_COMPILER clang++)
 set(CMAKE_CXX_STANDARD 17)
@@ -17,7 +17,7 @@ find_package(nav_msgs REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 
 find_package(Eigen3 REQUIRED)
-find_package(Sophus REQUIRED)
+find_package(Sophus CONFIG REQUIRED)
 find_package(TBB REQUIRED)
 find_package(teaserpp REQUIRED)
 find_package(robin REQUIRED)
@@ -26,7 +26,9 @@ find_package(PCL CONFIG REQUIRED)
 find_package(pcl_conversions REQUIRED)
 
 # Include directories
-include_directories(include
+include_directories(
+  include
+  3rdparty/small_gicp/include
   ${PCL_INCLUDE_DIRS}
   ${Sophus_INCLUDE_DIRS}
 )

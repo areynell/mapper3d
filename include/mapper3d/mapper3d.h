@@ -11,12 +11,26 @@
 #include <kiss_matcher/FasterPFH.hpp>
 #include <kiss_matcher/KISSMatcher.hpp>
 #include <queue>
+#include <small_gicp/pcl/pcl_point.hpp>
+#include <small_gicp/pcl/pcl_point_traits.hpp>
+#include <small_gicp/pcl/pcl_registration.hpp>
 #include <sophus/se3.hpp>
 
 namespace mapper3d {
 
+struct GICPParams {
+    double voxel_size = 0.5;                   // Voxel resolution for downsampling (m)
+    int num_threads = 32;                      // Number of threads for GICP
+    int num_neighbors_for_covariance = 20;     // Number of neighbors for covariance estimation
+    double max_correspondence_distance = 1.0;  // Maximum correspondence distance (m)
+    std::string registration_type = "VGICP";   // Registration type: "VGICP" or "GICP"
+};
+
 struct Mapper3DParams {
-    float voxel_size = 0.5F;  // Voxel size for downsampling (m)
+    double voxel_size = 0.5;           // Voxel size for downsampling (m)
+    double z_height_threshold = -1.0;  // Z height threshold for filtering (m)
+
+    GICPParams gicp_params;
 };
 
 struct PointCloudFrame {
@@ -40,6 +54,10 @@ class Mapper3D {
     const std::vector<Eigen::Vector3f> &kiss_matcher_keypoint_cloud() const;
 
    private:
+    Sophus::SE3d estimate_lidar_odometry(const pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud,
+                                         const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
+                                         const Sophus::SE3d &prev_sensor_pose);
+
     Sophus::SE3d eigen_to_sophus(const Eigen::Matrix4d &eigen_matrix);
 
     Sophus::SE3d constrain_pose_to_se2(const Sophus::SE3d &pose);
@@ -60,6 +78,10 @@ class Mapper3D {
                                    const pcl::PointCloud<pcl::PointXYZ>::Ptr target,
                                    const Sophus::SE3d &initial_transform_guess);
 
+    Sophus::SE3d small_gicp_registration(const pcl::PointCloud<pcl::PointXYZ>::Ptr target,
+                                         const pcl::PointCloud<pcl::PointXYZ>::Ptr source,
+                                         const Sophus::SE3d &initial_transform_guess);
+
     void enqueue_visualization_data(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
                                     const Sophus::SE3d &sensor_pose);
 
@@ -73,6 +95,7 @@ class Mapper3D {
     pcl::VoxelGrid<pcl::PointXYZ> voxel_grid_;
 
     pcl::GeneralizedIterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> gicp_;
+    small_gicp::RegistrationPCL<pcl::PointXYZ, pcl::PointXYZ> small_gicp_;
 
     double kiss_resolution_;
     kiss_matcher::KISSMatcherConfig kiss_config_;

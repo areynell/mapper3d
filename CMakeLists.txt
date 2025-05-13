@@ -24,6 +24,7 @@ find_package(robin REQUIRED)
 find_package(kiss_matcher REQUIRED)
 find_package(PCL CONFIG REQUIRED)
 find_package(pcl_conversions REQUIRED)
+find_package(GTSAM CONFIG REQUIRED)
 
 # Include directories
 include_directories(
@@ -40,9 +41,17 @@ target_link_libraries(utils
   Eigen3::Eigen
 )
 
+add_library(graph_optimizer src/graph_optimizer.cpp)
+target_link_libraries(graph_optimizer
+  Sophus::Sophus
+  Eigen3::Eigen
+  gtsam
+)
+
 add_library(mapper3d src/mapper3d.cpp)
 target_link_libraries(mapper3d
   utils
+  graph_optimizer
   ${PCL_LIBRARIES}
   Sophus::Sophus
   Eigen3::Eigen
@@ -60,7 +69,9 @@ target_include_directories(mapper3d
 
 # Create executables
 add_executable(mapper3d_node src/mapper3d_node.cpp)
-target_link_libraries(mapper3d_node mapper3d)
+target_link_libraries(mapper3d_node
+  mapper3d
+)
 ament_target_dependencies(mapper3d_node
   rclcpp
   tf2

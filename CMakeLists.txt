@@ -24,6 +24,7 @@ find_package(robin REQUIRED)
 find_package(kiss_matcher REQUIRED)
 find_package(PCL CONFIG REQUIRED)
 find_package(pcl_conversions REQUIRED)
+find_package(OpenCV REQUIRED)
 find_package(GTSAM CONFIG REQUIRED)
 
 # Include directories
@@ -41,8 +42,22 @@ target_link_libraries(utils
   Eigen3::Eigen
 )
 
+add_library(loop_closure_detector src/loop_closure_detector.cpp)
+target_link_libraries(loop_closure_detector
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBS}
+  Sophus::Sophus
+  Eigen3::Eigen
+  TBB::tbb
+  teaserpp::teaser_registration
+  teaserpp::teaser_io
+  robin::robin
+  kiss_matcher::kiss_matcher_core
+)
+
 add_library(graph_optimizer src/graph_optimizer.cpp)
 target_link_libraries(graph_optimizer
+  loop_closure_detector
   Sophus::Sophus
   Eigen3::Eigen
   gtsam

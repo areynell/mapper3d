@@ -38,7 +38,7 @@ struct Mapper3DNodeParams {
     std::string point_cloud_sub_topic = "/velodyne_points";
     std::string point_cloud_pub_topic = "/filtered_points";
     std::string keypoint_pub_topic = "/keypoints";
-    std::string pose_trajectory_topic = "/pose_trajectory";
+    std::string pose_trajectory_pub_topic = "/pose_trajectory";
 
     mapper3d::Mapper3DParams mapper3d_params;
 };

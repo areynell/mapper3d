@@ -14,12 +14,15 @@
 #include <thread>
 
 #include "mapper3d/common.h"
+#include "mapper3d/loop_closure_detector.h"
 
 namespace mapper3d {
 
 struct GraphOptimizerParams {
     int max_iterations = 100;
     // gtsam::GncLossType loss_type = gtsam::GncLossType::TLS;
+
+    LoopClosureDetectorParams loop_closure_detector_params;
 };
 
 class GraphOptimizer {
@@ -62,6 +65,8 @@ class GraphOptimizer {
     bool stop_processing_frames_;
     std::thread frame_processing_thread_;
     std::mutex graph_mutex_;
+
+    LoopClosureDetector loop_closure_detector_;
 };
 
 }  // namespace mapper3d

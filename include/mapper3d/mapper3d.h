@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pcl/filters/radius_outlier_removal.h>
+#include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -16,6 +18,8 @@
 #include <small_gicp/pcl/pcl_registration.hpp>
 #include <sophus/se3.hpp>
 
+#include "mapper3d/graph_optimizer.h"
+
 namespace mapper3d {
 
 struct GICPParams {
@@ -29,8 +33,10 @@ struct GICPParams {
 struct Mapper3DParams {
     double voxel_size = 0.5;           // Voxel size for downsampling (m)
     double z_height_threshold = -1.0;  // Z height threshold for filtering (m)
+    double min_sensor_distance = 3.0;  // Distance threshold for filtering points near the sensor (m)
 
     GICPParams gicp_params;
+    GraphOptimizerParams graph_optimizer_params;
 };
 
 struct PointCloudFrame {
@@ -66,8 +72,6 @@ class Mapper3D {
                                                            const Sophus::SE3d &prev_sensor_pose,
                                                            const Sophus::SE3d &sensor_pose);
 
-    pcl::PointCloud<pcl::PointXYZ>::Ptr downsample_point_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr input_cloud);
-
     pcl::PointCloud<pcl::PointXYZ>::Ptr remove_points_below_z(const pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
                                                               const double z_threshold);
 
@@ -92,6 +96,10 @@ class Mapper3D {
 
     // Sophus::SE3d predict_sensor_motion();
 
+    double z_height_threshold_;
+    double min_sensor_distance_;
+    pcl::StatisticalOutlierRemoval<pcl::PointXYZ> stat_outlier_removal_;
+    pcl::RadiusOutlierRemoval<pcl::PointXYZ> radius_outlier_removal_;
     pcl::VoxelGrid<pcl::PointXYZ> voxel_grid_;
 
     pcl::GeneralizedIterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> gicp_;
@@ -109,8 +117,6 @@ class Mapper3D {
     Sophus::SE3d prev_sensor_pose_;
     Sophus::SE3d sensor_pose_;
 
-    double z_height_threshold_;
-
     std::vector<Eigen::Vector3f> kiss_matcher_processed_prev_point_cloud_;
     std::vector<Eigen::Vector3f> kiss_matcher_processed_point_cloud_;
 
@@ -119,6 +125,10 @@ class Mapper3D {
 
     std::deque<PointCloudFrame> aligned_point_cloud_frames_;
     size_t max_point_cloud_history_;
+
+    GraphOptimizer graph_optimizer_;
+
+    size_t pose_id_;
 
     pcl::visualization::PCLVisualizer::Ptr viewer_;
     bool viewer_initialized_;

@@ -37,7 +37,7 @@ Mapper3DNode::Mapper3DNode(const Mapper3DNodeParams &params)
         this->create_publisher<sensor_msgs::msg::PointCloud2>(params.keypoint_pub_topic, params.pub_queue_size);
 
     pose_trajectory_pub_ =
-        this->create_publisher<nav_msgs::msg::Path>(params.pose_trajectory_topic, params.pub_queue_size);
+        this->create_publisher<nav_msgs::msg::Path>(params.pose_trajectory_pub_topic, params.pub_queue_size);
 
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(this);
 
@@ -132,7 +132,10 @@ void Mapper3DNode::visualization_thread_func() {
             auto kiss_matcher_point_cloud = mapper3d::utils::point_vec_to_cloud(viz_data->kiss_matcher_point_cloud);
             auto kiss_matcher_keypoints = mapper3d::utils::point_vec_to_cloud(viz_data->kiss_matcher_keypoint_cloud);
 
-            publish_point_cloud(kiss_matcher_point_cloud, sensor_frame_id_, viz_data->timestamp);
+            publish_point_cloud(viz_data->point_cloud, sensor_frame_id_, viz_data->timestamp);
+            // Why does kiss_matcher_point_cloud "smear" during turns? Is there a timestamp issue? NOTE: it's not due to
+            // point cloud warping
+            // publish_point_cloud(kiss_matcher_point_cloud, sensor_frame_id_, viz_data->timestamp);
             publish_keypoint_cloud(kiss_matcher_keypoints, sensor_frame_id_, viz_data->timestamp);
             publish_pose_trajectory(viz_data->sensor_pose, map_frame_id_, viz_data->timestamp);
         }

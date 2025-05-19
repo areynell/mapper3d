@@ -12,7 +12,8 @@
 
 namespace mapper3d {
 
-GraphOptimizer::GraphOptimizer(const GraphOptimizerParams& params) {
+GraphOptimizer::GraphOptimizer(const GraphOptimizerParams& params)
+    : loop_closure_detector_(params.loop_closure_detector_params) {
     lm_params_.setMaxIterations(params.max_iterations);
 
     gnc_params_ = gtsam::GncParams<gtsam::LevenbergMarquardtParams>(lm_params_);
@@ -39,6 +40,7 @@ void GraphOptimizer::add_frame(const Frame& frame) {
 void GraphOptimizer::process_frames() {
     Frame frame;
     bool new_frame_available = false;
+
     while (!stop_processing_frames_) {
         std::cout << "Processing available frames..." << std::endl;
 
@@ -67,10 +69,17 @@ void GraphOptimizer::process_frames() {
             std::scoped_lock<std::mutex> lock(graph_mutex_);
             add_odometry_constraint(frame.pose, frame.odometry_covariance);
 
-            std::cout << "Finished processing frame." << std::endl;
+            const auto loop_closure = loop_closure_detector_.find_loop_closures(frame);
+            if (loop_closure) {
+                std::cout << "\033[32m" << "Found loop closure between frame " << loop_closure->prev_id << " and frame "
+                          << loop_closure->id << "\033[0m" << std::endl;
 
-            // TODO: Check for possible loop closures and add constraints
+                add_loop_closure_constraint(loop_closure->prev_id, loop_closure->id, loop_closure->relative_pose,
+                                            loop_closure->covariance);
+            }
         }
+
+        std::cout << "Finished processing frame." << std::endl;
     }
 }
 
@@ -85,8 +94,12 @@ void GraphOptimizer::add_odometry_constraint(const Sophus::SE3d& pose,
 
     if (current_pose_index_ == 0) {
         // Add prior factor for the first pose in the graph
-        graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(current_pose_symbol, current_pose,
-                                                                odometry_noise_model);
+        const Eigen::Matrix<double, 6, 6> prior_covariance =
+            Eigen::Matrix<double, 6, 6>::Identity() * 1.0e-9;  // Very small values
+        graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(current_pose_symbol, current_pose, prior_covariance);
+
+        // graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(current_pose_symbol, current_pose,
+        //                                                         odometry_noise_model);
     } else {
         const gtsam::Symbol prev_pose_symbol('x', current_pose_index_ - 1);
 
@@ -101,6 +114,9 @@ void GraphOptimizer::add_odometry_constraint(const Sophus::SE3d& pose,
     initial_estimates_.insert(current_pose_symbol, current_pose);
 
     current_pose_index_++;
+
+    // TODO: Remove this once no longer debugging, since it's extremely expensive to write the graph to file
+    gtsam::writeG2o(graph_, initial_estimates_, "unoptimized_graph.g2o");
 }
 
 void GraphOptimizer::add_loop_closure_constraint(size_t prev_pose_id, size_t pose_id, const Sophus::SE3d& relative_pose,
@@ -117,6 +133,9 @@ void GraphOptimizer::add_loop_closure_constraint(size_t prev_pose_id, size_t pos
     // Add the loop closure factor
     graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(prev_pose_symbol, current_pose_symbol,
                                                               loop_closure_relative_pose, loop_closure_noise_model);
+
+    // TODO: Remove this once no longer debugging, since it's extremely expensive to write the graph to file
+    gtsam::writeG2o(graph_, initial_estimates_, "unoptimized_graph.g2o");
 }
 
 void GraphOptimizer::optimize() {

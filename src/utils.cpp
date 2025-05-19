@@ -1,9 +1,13 @@
 #include "mapper3d/utils.h"
 
+#include "mapper3d/common.h"
+
 namespace mapper3d {
 namespace utils {
 
 std::vector<Eigen::Vector3f> point_cloud_to_vec(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) {
+    Timer timer("Mapper3D::point_cloud_to_vec");
+
     std::vector<Eigen::Vector3f> point_vec;
     point_vec.reserve(point_cloud->size());
 
@@ -17,6 +21,8 @@ std::vector<Eigen::Vector3f> point_cloud_to_vec(const pcl::PointCloud<pcl::Point
 }
 
 pcl::PointCloud<pcl::PointXYZ>::Ptr point_vec_to_cloud(const std::vector<Eigen::Vector3f>& point_vec) {
+    Timer timer("Mapper3D::point_vec_to_cloud");
+
     pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud(new pcl::PointCloud<pcl::PointXYZ>);
     point_cloud->reserve(point_vec.size());
 
@@ -27,6 +33,14 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr point_vec_to_cloud(const std::vector<Eigen::
         point_cloud->emplace_back(point.x(), point.y(), point.z());
     }
     return point_cloud;
+}
+
+double deg2rad(const double deg) {
+    return deg * (M_PI / 180.0);
+}
+
+double rad2deg(const double rad) {
+    return rad * (180.0 / M_PI);
 }
 
 }  // namespace utils

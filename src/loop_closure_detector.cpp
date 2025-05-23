@@ -5,6 +5,7 @@
 #include <pcl/io/pcd_io.h>
 #include <pcl/visualization/pcl_visualizer.h>
 
+#include <cassert>
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -23,12 +24,7 @@ LoopClosureDetector::LoopClosureDetector(const LoopClosureDetectorParams& params
       num_prev_frames_to_skip_(params.num_prev_frames_to_skip) {}
 
 std::optional<LoopClosure> LoopClosureDetector::find_loop_closures(const Frame& frame) {
-    std::cout << "Searching for loop closures..." << std::endl;
-
-    // TODO: Optimize this by first computing FasterPFH features and storing them in the frame
-    frames_.emplace(frame.id, frame);
-
-    std::cout << "frames_.size() = " << frames_.size() << std::endl;
+    Timer timer("Loop closure detection");
 
     // clang-format off
     // Loop closure detection logic is as follows:
@@ -38,6 +34,14 @@ std::optional<LoopClosure> LoopClosureDetector::find_loop_closures(const Frame& 
     // 4) If the GICP registration is successful, add the loop closure to the graph optimizer
     // 5) Return the loop closure
     // clang-format on
+
+    // TODO: Optimize this by first computing FasterPFH features and storing them in the frame
+    frames_.emplace(frame.id, frame);
+
+    size_t max_num_inliers = 0;
+    bool loop_closure_found = false;
+    Frame best_prev_frame;  // Only used for visualization
+    LoopClosure best_loop_closure;
 
     for (const auto& [prev_id, prev_frame] : frames_) {
         if (frame.id == prev_id) {
@@ -50,39 +54,52 @@ std::optional<LoopClosure> LoopClosureDetector::find_loop_closures(const Frame& 
 
         // Check if the distance between the two frames is below a certain threshold
         const double distance = (frame.pose.translation() - prev_frame.pose.translation()).norm();
+        assert(distance >= 0.0);
         if (distance < distance_threshold_) {
-            const auto& prev_point_cloud_vec = utils::point_cloud_to_vec(prev_frame.point_cloud);
-            const auto& point_cloud_vec = utils::point_cloud_to_vec(frame.point_cloud);
-            if (!prev_point_cloud_vec.empty() && !point_cloud_vec.empty()) {
-                // Perform KISS-Matcher global registration
-                const auto solution = kiss_matcher_.estimate(point_cloud_vec, prev_point_cloud_vec);
+            // TODO: Is it possible to call estimate directly on FasterPFH (keypoint, descriptor) pairs?
+            // Perform KISS-Matcher global registration
+            const auto solution = kiss_matcher_.estimate(frame.point_cloud, prev_frame.point_cloud);
 
-                std::cout << "kiss_matcher_.getNumFinalInliers() = " << kiss_matcher_.getNumFinalInliers()
-                          << ", num_inliers_threshold_ = " << num_inliers_threshold_ << std::endl;
+            std::cout << "kiss_matcher_.getNumFinalInliers() = " << kiss_matcher_.getNumFinalInliers()
+                      << ", num_inliers_threshold_ = " << num_inliers_threshold_ << std::endl;
 
-                if (kiss_matcher_.getNumFinalInliers() > num_inliers_threshold_) {
-                    // // Perform GICP local registration to refine the match
-                    // const Sophus::SE3d refined_pose_change =
-                    //     small_gicp_registration(point_cloud_vec, prev_point_cloud_vec, solution.relative_pose);
-                    // if (refined_pose_change.is_valid()) {
-                    //     return LoopClosure(prev_id, frame.id, refined_pose_change, Eigen::Matrix<double, 6,
-                    //     6>::Identity());
-                    // }
+            // QUESTION: Why do we generally get such low inlier counts?
+            if (kiss_matcher_.getNumFinalInliers() > num_inliers_threshold_ &&
+                kiss_matcher_.getNumFinalInliers() > max_num_inliers) {
+                loop_closure_found = true;
+                max_num_inliers = kiss_matcher_.getNumFinalInliers();
+                best_prev_frame = prev_frame;  // Store the best previous frame for visualization
+                const Sophus::SE3d relative_pose = Sophus::SE3d(solution.rotation, solution.translation);
 
-                    const Sophus::SE3d relative_pose = Sophus::SE3d(solution.rotation, solution.translation);
+                // TODO: Use a more representative covariance matrix
+                best_loop_closure =
+                    LoopClosure(prev_id, frame.id, relative_pose, Eigen::Matrix<double, 6, 6>::Identity());
 
-                    visualize_point_cloud_alignment(prev_frame, frame, relative_pose, 1920, 1080, 200.0F, 200.0F);
-
-                    return LoopClosure(prev_id, frame.id, relative_pose, Eigen::Matrix<double, 6, 6>::Identity());
-
-                    // TODO: Return the best of N matches instead of the first valid match
-                }
+                std::cout << "\033[33m" << "Found loop closure between frames " << prev_id << " and " << frame.id
+                          << " with " << max_num_inliers << " inliers." << "\033[0m" << std::endl;
             }
         }
     }
 
-    std::cout << "\033[31m" << "No loop closures found for current frame " << "\033[0m" << std::endl;
+    if (loop_closure_found) {
+        std::cout << "\033[32m" << "Found loop closure between frames " << best_loop_closure.prev_id << " and "
+                  << best_loop_closure.id << " with " << max_num_inliers << " inliers." << "\033[0m" << std::endl;
 
+        visualize_point_cloud_alignment(best_prev_frame, frame, best_loop_closure.relative_pose, 1920, 1080, 200.0F,
+                                        200.0F);
+
+        // // Perform GICP local registration to refine the match
+        // const Sophus::SE3d refined_pose_change =
+        //     small_gicp_registration(point_cloud_vec, prev_point_cloud_vec, solution.relative_pose);
+        // if (refined_pose_change.is_valid()) {
+        //     return LoopClosure(prev_id, frame.id, refined_pose_change, Eigen::Matrix<double, 6,
+        //     6>::Identity());
+        // }
+
+        return best_loop_closure;
+    }
+
+    std::cout << "\033[31m" << "No loop closures found for current frame " << "\033[0m" << std::endl;
     return std::nullopt;  // No loop closure found
 }
 
@@ -91,14 +108,15 @@ void LoopClosureDetector::visualize_point_cloud_alignment(const Frame& prev_fram
                                                           const size_t image_height, const float view_range_x,
                                                           const float view_range_y) {
     // Transform previous point cloud from sensor frame to world frame
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud = utils::point_vec_to_cloud(prev_frame.point_cloud);
     pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_prev_point_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-    pcl::transformPointCloud(*prev_frame.point_cloud, *transformed_prev_point_cloud,
-                             prev_frame.pose.matrix().cast<double>());
+    pcl::transformPointCloud(*prev_point_cloud, *transformed_prev_point_cloud, prev_frame.pose.matrix().cast<double>());
 
     // Transform current point cloud from sensor frame to world frame
-    pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_point_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr current_point_cloud = utils::point_vec_to_cloud(frame.point_cloud);
     const Sophus::SE3d corrected_sensor_pose = prev_frame.pose * relative_pose;
-    pcl::transformPointCloud(*frame.point_cloud, *transformed_point_cloud,
+    pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_point_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::transformPointCloud(*current_point_cloud, *transformed_point_cloud,
                              corrected_sensor_pose.matrix().cast<double>());
 
     // Get the current frame's position to center the view

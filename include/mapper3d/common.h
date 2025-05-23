@@ -29,12 +29,12 @@ struct Timer {
 struct Frame {
     size_t id;
     Sophus::SE3d pose;
-    pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud;
+    std::vector<Eigen::Vector3f> point_cloud;
     Eigen::Matrix<double, 6, 6> odometry_covariance;
 
     Frame() {}
 
-    Frame(size_t id, const Sophus::SE3d &pose, const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
+    Frame(size_t id, const Sophus::SE3d &pose, const std::vector<Eigen::Vector3f> &point_cloud,
           const Eigen::Matrix<double, 6, 6> &odometry_covariance)
         : id(id), pose(pose), point_cloud(point_cloud), odometry_covariance(odometry_covariance) {}
 };

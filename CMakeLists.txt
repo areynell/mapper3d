@@ -26,6 +26,7 @@ find_package(PCL CONFIG REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(GTSAM CONFIG REQUIRED)
+find_package(small_gicp REQUIRED)
 
 # Include directories
 include_directories(
@@ -75,6 +76,7 @@ target_link_libraries(mapper3d
   teaserpp::teaser_io
   robin::robin
   kiss_matcher::kiss_matcher_core
+  small_gicp::small_gicp
 )
 target_include_directories(mapper3d
   PUBLIC

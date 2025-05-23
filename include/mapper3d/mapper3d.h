@@ -17,6 +17,7 @@
 #include <small_gicp/pcl/pcl_point_traits.hpp>
 #include <small_gicp/pcl/pcl_registration.hpp>
 #include <sophus/se3.hpp>
+#include <vector>
 
 #include "mapper3d/graph_optimizer.h"
 
@@ -53,24 +54,24 @@ class Mapper3D {
 
     Sophus::SE3d sensor_pose() const;
 
-    pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud() const;
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud() const;
+
+    const std::vector<Eigen::Vector3f> &point_cloud_vec() const;
 
     const std::vector<Eigen::Vector3f> &kiss_matcher_point_cloud() const;
 
     const std::vector<Eigen::Vector3f> &kiss_matcher_keypoint_cloud() const;
 
    private:
-    Sophus::SE3d estimate_lidar_odometry(const pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud,
-                                         const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
+    Sophus::SE3d estimate_lidar_odometry(const std::vector<Eigen::Vector3f> &prev_point_cloud,
+                                         const std::vector<Eigen::Vector3f> &point_cloud,
                                          const Sophus::SE3d &prev_sensor_pose);
 
     Sophus::SE3d eigen_to_sophus(const Eigen::Matrix4d &eigen_matrix);
 
     Sophus::SE3d constrain_pose_to_se2(const Sophus::SE3d &pose);
 
-    pcl::PointCloud<pcl::PointXYZ>::Ptr filter_point_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
-                                                           const Sophus::SE3d &prev_sensor_pose,
-                                                           const Sophus::SE3d &sensor_pose);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr filter_point_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud);
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr remove_points_below_z(const pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
                                                               const double z_threshold);
@@ -84,6 +85,10 @@ class Mapper3D {
 
     Sophus::SE3d small_gicp_registration(const pcl::PointCloud<pcl::PointXYZ>::Ptr target,
                                          const pcl::PointCloud<pcl::PointXYZ>::Ptr source,
+                                         const Sophus::SE3d &initial_transform_guess);
+
+    Sophus::SE3d small_gicp_registration(const std::vector<Eigen::Vector3f> &target_points,
+                                         const std::vector<Eigen::Vector3f> &source_points,
                                          const Sophus::SE3d &initial_transform_guess);
 
     void enqueue_visualization_data(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
@@ -110,9 +115,9 @@ class Mapper3D {
     kiss_matcher::KISSMatcher kiss_matcher_;
     bool constrain_pose_to_se2_;
 
-    pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud_;
     pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud_;
     std::vector<Eigen::Vector3f> prev_point_cloud_vec_;
+    std::vector<Eigen::Vector3f> point_cloud_vec_;
 
     Sophus::SE3d prev_sensor_pose_;
     Sophus::SE3d sensor_pose_;

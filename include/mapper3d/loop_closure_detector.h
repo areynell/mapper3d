@@ -23,6 +23,8 @@ struct LoopClosure {
     Sophus::SE3d relative_pose;
     Eigen::Matrix<double, 6, 6> covariance;
 
+    LoopClosure() = default;
+
     LoopClosure(size_t prev_id, size_t id, const Sophus::SE3d& relative_pose,
                 const Eigen::Matrix<double, 6, 6>& covariance)
         : prev_id(prev_id), id(id), relative_pose(relative_pose), covariance(covariance) {}

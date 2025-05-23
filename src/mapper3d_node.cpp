@@ -50,6 +50,8 @@ void Mapper3DNode::pointcloud_callback(const sensor_msgs::msg::PointCloud2::Shar
     Timer timer("Mapper3DNode::pointcloud_callback");
 
     const rclcpp::Time msg_time(msg->header.stamp, RCL_ROS_TIME);
+    const double time_diff = (msg_time - prev_timestamp_).seconds();
+    RCLCPP_INFO(this->get_logger(), "Point cloud time difference: %.3f seconds", time_diff);
     if (msg_time <= prev_timestamp_) {
         RCLCPP_ERROR(this->get_logger(), "Received point cloud with non-increasing timestamp.");
         // exit(EXIT_FAILURE);

@@ -59,6 +59,8 @@ void GraphOptimizer::process_frames() {
 
             // Process the frame if available
             if (!unprocessed_frames_.empty()) {
+                std::cout << "unprocessed_frames_.size() = " << unprocessed_frames_.size() << std::endl;
+
                 frame = unprocessed_frames_.front();
                 unprocessed_frames_.pop();
                 new_frame_available = true;
@@ -71,9 +73,6 @@ void GraphOptimizer::process_frames() {
 
             const auto loop_closure = loop_closure_detector_.find_loop_closures(frame);
             if (loop_closure) {
-                std::cout << "\033[32m" << "Found loop closure between frame " << loop_closure->prev_id << " and frame "
-                          << loop_closure->id << "\033[0m" << std::endl;
-
                 add_loop_closure_constraint(loop_closure->prev_id, loop_closure->id, loop_closure->relative_pose,
                                             loop_closure->covariance);
             }

@@ -6,8 +6,10 @@
 #include <pcl/visualization/pcl_visualizer.h>
 
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <mutex>
+#include <small_gicp/registration/registration_helper.hpp>
 #include <thread>
 #include <vector>
 
@@ -18,9 +20,7 @@
 namespace mapper3d {
 
 Mapper3D::Mapper3D(const Mapper3DParams& params)
-    : prev_point_cloud_(new pcl::PointCloud<pcl::PointXYZ>),
-      point_cloud_(new pcl::PointCloud<pcl::PointXYZ>),
-      prev_sensor_pose_(Sophus::SE3d()),
+    : prev_sensor_pose_(Sophus::SE3d()),
       sensor_pose_(Sophus::SE3d()),
       z_height_threshold_(params.z_height_threshold),
       min_sensor_distance_(params.min_sensor_distance),
@@ -69,45 +69,42 @@ void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) 
     }
 
     // point_cloud_ = point_cloud;
-    point_cloud_ = filter_point_cloud(point_cloud, prev_sensor_pose_, sensor_pose_);
+    point_cloud_ = filter_point_cloud(point_cloud);
+    point_cloud_vec_ = utils::point_cloud_to_vec(point_cloud_);
 
-    if (prev_point_cloud_->empty()) {
-        prev_point_cloud_ = point_cloud_;
+    if (prev_point_cloud_vec_.empty()) {
+        prev_point_cloud_vec_ = point_cloud_vec_;
         return;
     }
 
-    sensor_pose_ = estimate_lidar_odometry(prev_point_cloud_, point_cloud_, prev_sensor_pose_);
+    sensor_pose_ = estimate_lidar_odometry(prev_point_cloud_vec_, point_cloud_vec_, prev_sensor_pose_);
 
     // TODO: Use a more representative pose uncertainty/covariance
-    graph_optimizer_.add_frame(Frame(pose_id_, sensor_pose_, point_cloud_, Eigen::Matrix<double, 6, 6>::Identity()));
+    const auto odometry_covariance = Eigen::Matrix<double, 6, 6>::Identity();
+    graph_optimizer_.add_frame(Frame(pose_id_, sensor_pose_, point_cloud_vec_, odometry_covariance));
 
     enqueue_visualization_data(point_cloud_, sensor_pose_);
 
-    prev_point_cloud_ = point_cloud_;
+    prev_point_cloud_vec_ = point_cloud_vec_;
     prev_sensor_pose_ = sensor_pose_;
     pose_id_++;
 }
 
-Sophus::SE3d Mapper3D::estimate_lidar_odometry(const pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud,
-                                               const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
+Sophus::SE3d Mapper3D::estimate_lidar_odometry(const std::vector<Eigen::Vector3f>& prev_point_cloud,
+                                               const std::vector<Eigen::Vector3f>& point_cloud,
                                                const Sophus::SE3d& prev_sensor_pose) {
     Timer timer("Mapper3D::estimate_lidar_odometry");
 
-    const auto& point_cloud_vec = utils::point_cloud_to_vec(point_cloud);
-    if (!prev_point_cloud_vec_.empty() && !point_cloud_vec.empty()) {
-        const auto solution = kiss_matcher_.estimate(point_cloud_vec, prev_point_cloud_vec_);
-        // kiss_matcher_.print();
-        const Sophus::SE3d sensor_pose_change = Sophus::SE3d(solution.rotation, solution.translation);
+    const auto solution = kiss_matcher_.estimate(point_cloud, prev_point_cloud);
+    // kiss_matcher_.print();
+    // std::cout << "kiss_matcher_.getNumFinalInliers() = " << kiss_matcher_.getNumFinalInliers() << std::endl;
 
-        // const Sophus::SE3d refined_pose_change = gicp_registration(prev_point_cloud_, point_cloud_,
-        // sensor_pose_change);
-        const Sophus::SE3d refined_pose_change =
-            small_gicp_registration(prev_point_cloud, point_cloud, sensor_pose_change);
-        sensor_pose_ = prev_sensor_pose_ * refined_pose_change;
+    const Sophus::SE3d sensor_pose_change = Sophus::SE3d(solution.rotation, solution.translation);
+    const Sophus::SE3d refined_pose_change = small_gicp_registration(prev_point_cloud, point_cloud, sensor_pose_change);
 
-        if (constrain_pose_to_se2_) {
-            sensor_pose_ = constrain_pose_to_se2(sensor_pose_);
-        }
+    Sophus::SE3d sensor_pose = prev_sensor_pose * refined_pose_change;
+    if (constrain_pose_to_se2_) {
+        sensor_pose = constrain_pose_to_se2(sensor_pose);
     }
 
     const auto kiss_matcher_processed_point_cloud_pair = kiss_matcher_.getProcessedInputClouds();
@@ -120,9 +117,7 @@ Sophus::SE3d Mapper3D::estimate_lidar_odometry(const pcl::PointCloud<pcl::PointX
 
     const auto kiss_matcher_correspondences = kiss_matcher_.getFinalCorrespondences();
 
-    prev_point_cloud_vec_ = point_cloud_vec;
-
-    return sensor_pose_;
+    return sensor_pose;
 }
 
 void Mapper3D::enqueue_visualization_data(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
@@ -158,9 +153,8 @@ Sophus::SE3d Mapper3D::constrain_pose_to_se2(const Sophus::SE3d& pose) {
     return Sophus::SE3d(constrained_rotation, translation);
 }
 
-pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::filter_point_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
-                                                                 const Sophus::SE3d& prev_sensor_pose,
-                                                                 const Sophus::SE3d& sensor_pose) {
+pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::filter_point_cloud(
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) {
     Timer timer("Mapper3D::filter_point_cloud");
 
     std::cout << "Number of points in original point cloud: " << point_cloud->size() << std::endl;
@@ -278,6 +272,23 @@ Sophus::SE3d Mapper3D::small_gicp_registration(const pcl::PointCloud<pcl::PointX
     return eigen_to_sophus(small_gicp_.getFinalTransformation().cast<double>());
 }
 
+Sophus::SE3d Mapper3D::small_gicp_registration(const std::vector<Eigen::Vector3f>& target_points,
+                                               const std::vector<Eigen::Vector3f>& source_points,
+                                               const Sophus::SE3d& initial_transform_guess) {
+    // const Eigen::Isometry3d init_guess(initial_transform_guess.matrix());
+
+    small_gicp::RegistrationSetting setting;
+    // small_gicp::RegistrationResult result = small_gicp::align(target_points, source_points, init_guess, setting);
+    small_gicp::RegistrationResult result =
+        small_gicp::align(target_points, source_points, Eigen::Isometry3d(initial_transform_guess.matrix()), setting);
+
+    std::cout << "Small GICP converged: " << result.converged << std::endl;
+    std::cout << "Small GICP error: " << result.error << std::endl;
+    std::cout << "Small GICP num inliers: " << result.num_inliers << std::endl;
+
+    return eigen_to_sophus(result.T_target_source.matrix());
+}
+
 // Sophus::SE3d Mapper3D::predict_sensor_motion() {
 //     // IMPORTANT: Assumes that dt between laser scans is constant
 //     // If the above assumption is true, we can use the pose change between pose(t-1) and pose(t) to predict
@@ -305,7 +316,9 @@ Sophus::SE3d Mapper3D::small_gicp_registration(const pcl::PointCloud<pcl::PointX
 
 Sophus::SE3d Mapper3D::sensor_pose() const { return sensor_pose_; }
 
-pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::point_cloud() const { return point_cloud_; }
+const pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::point_cloud() const { return point_cloud_; }
+
+const std::vector<Eigen::Vector3f>& Mapper3D::point_cloud_vec() const { return point_cloud_vec_; }
 
 const std::vector<Eigen::Vector3f>& Mapper3D::kiss_matcher_point_cloud() const {
     return kiss_matcher_processed_point_cloud_;

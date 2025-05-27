@@ -3,6 +3,31 @@ cmake_minimum_required(VERSION 3.22)
 # set(CMAKE_CXX_COMPILER clang++)
 set(CMAKE_CXX_STANDARD 17)
 
+# # AddressSanitizer flags
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer -g")
+# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+# set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fsanitize=address")
+
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O2")
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native -mtune=native")
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+# set(CMAKE_CXX_FLAGS "-g -O2")
+
+# # Multiple build types for different use cases
+# if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+#     # set(CMAKE_CXX_FLAGS_DEBUG "-g3 -O0 -ggdb -DDEBUG_MODE")
+#     set(CMAKE_CXX_FLAGS_DEBUG "-g -O2 -ggdb -DDEBUG_MODE")
+
+# elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
+#     set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")  # Portable
+
+# elseif(CMAKE_BUILD_TYPE STREQUAL "ReleaseNative")
+#     set(CMAKE_CXX_FLAGS_RELEASENATIVE "-O3 -DNDEBUG -march=native -mtune=native")  # Maximum performance
+
+# elseif(CMAKE_BUILD_TYPE STREQUAL "Profile")
+#     set(CMAKE_CXX_FLAGS_PROFILE "-O2 -g -DNDEBUG -march=native")  # Fast + debuggable
+# endif()
+
 project(mapper3d)
 
 # Find dependencies
@@ -43,6 +68,19 @@ target_link_libraries(utils
   Eigen3::Eigen
 )
 
+add_library(common_dependencies INTERFACE)
+target_link_libraries(common_dependencies INTERFACE
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBS}
+  Eigen3::Eigen
+  Sophus::Sophus
+  utils
+)
+target_include_directories(common_dependencies INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 add_library(loop_closure_detector src/loop_closure_detector.cpp)
 target_link_libraries(loop_closure_detector
   ${PCL_LIBRARIES}
@@ -54,6 +92,7 @@ target_link_libraries(loop_closure_detector
   teaserpp::teaser_io
   robin::robin
   kiss_matcher::kiss_matcher_core
+  common_dependencies
 )
 
 add_library(graph_optimizer src/graph_optimizer.cpp)
@@ -62,6 +101,7 @@ target_link_libraries(graph_optimizer
   Sophus::Sophus
   Eigen3::Eigen
   gtsam
+  common_dependencies
 )
 
 add_library(mapper3d src/mapper3d.cpp)
@@ -77,11 +117,11 @@ target_link_libraries(mapper3d
   robin::robin
   kiss_matcher::kiss_matcher_core
   small_gicp::small_gicp
+  common_dependencies
 )
-target_include_directories(mapper3d
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
+target_include_directories(mapper3d PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
 )
 
 # Create executables

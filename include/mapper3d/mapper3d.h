@@ -25,16 +25,26 @@ namespace mapper3d {
 
 struct GICPParams {
     double voxel_size = 0.5;                   // Voxel resolution for downsampling (m)
-    int num_threads = 32;                      // Number of threads for GICP
+    int num_threads = 8;                       // Number of threads for GICP
     int num_neighbors_for_covariance = 20;     // Number of neighbors for covariance estimation
     double max_correspondence_distance = 1.0;  // Maximum correspondence distance (m)
     std::string registration_type = "VGICP";   // Registration type: "VGICP" or "GICP"
 };
 
 struct Mapper3DParams {
-    double voxel_size = 0.5;           // Voxel size for downsampling (m)
+    // IMPORTANT: This should be the same as the voxel size used in Mapper3D and LoopClosureDetector
+    double voxel_size = 0.5;  // Voxel size for downsampling (m)
+    // double normal_radius = 3.0 * voxel_size;
+    // double fpfh_radius = 5.0 * voxel_size;
     double z_height_threshold = -1.0;  // Z height threshold for filtering (m)
     double min_sensor_distance = 3.0;  // Distance threshold for filtering points near the sensor (m)
+
+    double x_odom_uncertainty = 0.1;                       // X position uncertainty for lidar odometry (m)
+    double y_odom_uncertainty = 0.1;                       // Y position uncertainty for lidar odometry (m)
+    double z_odom_uncertainty = 0.5;                       // Z position uncertainty for lidar odometry (m)
+    double roll_odom_uncertainty = utils::deg2rad(15.0);   // Roll orientation uncertainty for lidar odometry (rad)
+    double pitch_odom_uncertainty = utils::deg2rad(15.0);  // Pitch orientation uncertainty for lidar odometry (rad)
+    double yaw_odom_uncertainty = utils::deg2rad(5.0);     // Yaw orientation uncertainty for lidar odometry (rad)
 
     GICPParams gicp_params;
     GraphOptimizerParams graph_optimizer_params;
@@ -79,14 +89,6 @@ class Mapper3D {
     pcl::PointCloud<pcl::PointXYZ>::Ptr remove_points_near_sensor(const pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
                                                                   const double min_distance);
 
-    Sophus::SE3d gicp_registration(const pcl::PointCloud<pcl::PointXYZ>::Ptr source,
-                                   const pcl::PointCloud<pcl::PointXYZ>::Ptr target,
-                                   const Sophus::SE3d &initial_transform_guess);
-
-    Sophus::SE3d small_gicp_registration(const pcl::PointCloud<pcl::PointXYZ>::Ptr target,
-                                         const pcl::PointCloud<pcl::PointXYZ>::Ptr source,
-                                         const Sophus::SE3d &initial_transform_guess);
-
     Sophus::SE3d small_gicp_registration(const std::vector<Eigen::Vector3f> &target_points,
                                          const std::vector<Eigen::Vector3f> &source_points,
                                          const Sophus::SE3d &initial_transform_guess);
@@ -103,14 +105,8 @@ class Mapper3D {
 
     double z_height_threshold_;
     double min_sensor_distance_;
-    pcl::StatisticalOutlierRemoval<pcl::PointXYZ> stat_outlier_removal_;
-    pcl::RadiusOutlierRemoval<pcl::PointXYZ> radius_outlier_removal_;
     pcl::VoxelGrid<pcl::PointXYZ> voxel_grid_;
 
-    pcl::GeneralizedIterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> gicp_;
-    small_gicp::RegistrationPCL<pcl::PointXYZ, pcl::PointXYZ> small_gicp_;
-
-    double kiss_resolution_;
     kiss_matcher::KISSMatcherConfig kiss_config_;
     kiss_matcher::KISSMatcher kiss_matcher_;
     bool constrain_pose_to_se2_;
@@ -121,6 +117,8 @@ class Mapper3D {
 
     Sophus::SE3d prev_sensor_pose_;
     Sophus::SE3d sensor_pose_;
+
+    Eigen::Matrix<double, 6, 6> odometry_covariance_;
 
     std::vector<Eigen::Vector3f> kiss_matcher_processed_prev_point_cloud_;
     std::vector<Eigen::Vector3f> kiss_matcher_processed_point_cloud_;

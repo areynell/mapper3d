@@ -42,7 +42,7 @@ void GraphOptimizer::process_frames() {
     bool new_frame_available = false;
 
     while (!stop_processing_frames_) {
-        std::cout << "Processing available frames..." << std::endl;
+        Timer timer("GraphOptimizer::process_frames");
 
         new_frame_available = false;
         {
@@ -71,7 +71,7 @@ void GraphOptimizer::process_frames() {
             std::scoped_lock<std::mutex> lock(graph_mutex_);
             add_odometry_constraint(frame.pose, frame.odometry_covariance);
 
-            const auto loop_closure = loop_closure_detector_.find_loop_closures(frame);
+            const auto loop_closure = loop_closure_detector_.detect_loop_closures(frame);
             if (loop_closure) {
                 add_loop_closure_constraint(loop_closure->prev_id, loop_closure->id, loop_closure->relative_pose,
                                             loop_closure->covariance);

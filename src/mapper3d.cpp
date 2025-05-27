@@ -24,26 +24,23 @@ Mapper3D::Mapper3D(const Mapper3DParams& params)
       sensor_pose_(Sophus::SE3d()),
       z_height_threshold_(params.z_height_threshold),
       min_sensor_distance_(params.min_sensor_distance),
-      kiss_resolution_(params.voxel_size),
-      kiss_config_(kiss_resolution_),
+      kiss_config_(params.voxel_size),
       kiss_matcher_(kiss_config_),
       graph_optimizer_(params.graph_optimizer_params),
       constrain_pose_to_se2_(false),
       viewer_initialized_(false),
       max_point_cloud_history_(50),
       pose_id_(0) {
-    // stat_outlier_removal_.setMeanK(50);             // Number of neighbors to analyze for each point
-    // stat_outlier_removal_.setStddevMulThresh(1.0);  // Standard deviation multiplier
-    // radius_outlier_removal_.setRadiusSearch(0.8);        // Radius in meters
-    // radius_outlier_removal_.setMinNeighborsInRadius(2);  // Minimum number of neighbors within the radius
+    // TODO: Use a more representative odometry pose uncertainty/covariance
+    odometry_covariance_ = Eigen::Matrix<double, 6, 6>::Zero();
+    odometry_covariance_.block<3, 3>(0, 0) = Eigen::DiagonalMatrix<double, 3>(
+        params.x_odom_uncertainty, params.y_odom_uncertainty, params.z_odom_uncertainty);
+    odometry_covariance_.block<3, 3>(3, 3) = Eigen::DiagonalMatrix<double, 3>(
+        params.roll_odom_uncertainty, params.pitch_odom_uncertainty, params.yaw_odom_uncertainty);
+
+    std::cout << " odometry_covariance_ = " << std::endl << odometry_covariance_ << std::endl;
 
     voxel_grid_.setLeafSize(params.voxel_size, params.voxel_size, params.voxel_size);
-
-    small_gicp_.setNumThreads(params.gicp_params.num_threads);
-    small_gicp_.setNumNeighborsForCovariance(params.gicp_params.num_neighbors_for_covariance);
-    small_gicp_.setMaxCorrespondenceDistance(params.gicp_params.max_correspondence_distance);
-    small_gicp_.setVoxelResolution(params.gicp_params.voxel_size);
-    small_gicp_.setRegistrationType(params.gicp_params.registration_type);
 
     // viz_thread_ = std::thread(&Mapper3D::visualization_thread_func, this);
     // run_viz_thread_ = true;
@@ -79,9 +76,7 @@ void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) 
 
     sensor_pose_ = estimate_lidar_odometry(prev_point_cloud_vec_, point_cloud_vec_, prev_sensor_pose_);
 
-    // TODO: Use a more representative pose uncertainty/covariance
-    const auto odometry_covariance = Eigen::Matrix<double, 6, 6>::Identity();
-    graph_optimizer_.add_frame(Frame(pose_id_, sensor_pose_, point_cloud_vec_, odometry_covariance));
+    graph_optimizer_.add_frame(Frame(pose_id_, sensor_pose_, point_cloud_vec_, odometry_covariance_));
 
     enqueue_visualization_data(point_cloud_, sensor_pose_);
 
@@ -96,7 +91,8 @@ Sophus::SE3d Mapper3D::estimate_lidar_odometry(const std::vector<Eigen::Vector3f
     Timer timer("Mapper3D::estimate_lidar_odometry");
 
     const auto solution = kiss_matcher_.estimate(point_cloud, prev_point_cloud);
-    // kiss_matcher_.print();
+    kiss_matcher_.print();
+    // std::cout << "kiss_matcher_.getNumRotationInliers() = " << kiss_matcher_.getNumRotationInliers() << std::endl;
     // std::cout << "kiss_matcher_.getNumFinalInliers() = " << kiss_matcher_.getNumFinalInliers() << std::endl;
 
     const Sophus::SE3d sensor_pose_change = Sophus::SE3d(solution.rotation, solution.translation);
@@ -107,6 +103,7 @@ Sophus::SE3d Mapper3D::estimate_lidar_odometry(const std::vector<Eigen::Vector3f
         sensor_pose = constrain_pose_to_se2(sensor_pose);
     }
 
+    // IMPORTANT: We want ALL detected keypoints and descriptors BEFORE any filtering or processing has been applied
     const auto kiss_matcher_processed_point_cloud_pair = kiss_matcher_.getProcessedInputClouds();
     kiss_matcher_processed_prev_point_cloud_ = std::get<0>(kiss_matcher_processed_point_cloud_pair);
     kiss_matcher_processed_point_cloud_ = std::get<1>(kiss_matcher_processed_point_cloud_pair);
@@ -163,35 +160,23 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::filter_point_cloud(
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_in = point_cloud;
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_out(new pcl::PointCloud<pcl::PointXYZ>);
 
-    // 1. Remove NaN points
+    // 1) Remove NaN points
     std::vector<int> nan_indices;
     pcl::removeNaNFromPointCloud(*cloud_in, *cloud_out, nan_indices);
     cloud_in.swap(cloud_out);
     std::cout << "Points after NaN removal: " << cloud_in->size() << std::endl;
 
-    // 2. Remove points near the sensor
+    // 2) Remove points near the sensor
     cloud_out = remove_points_near_sensor(cloud_in, min_sensor_distance_);
     cloud_in.swap(cloud_out);
     std::cout << "Points after near sensor removal: " << cloud_in->size() << std::endl;
 
-    // 3. Remove points below z-height threshold
+    // 3) Remove points below z-height threshold
     cloud_out = remove_points_below_z(cloud_in, z_height_threshold_);
     cloud_in.swap(cloud_out);
     std::cout << "Points after z-height removal: " << cloud_in->size() << std::endl;
 
-    // // 4. Statistical Outlier Removal
-    // stat_outlier_removal_.setInputCloud(cloud_in);
-    // stat_outlier_removal_.filter(*cloud_out);
-    // cloud_in.swap(cloud_out);
-    // std::cout << "Points after statistical outlier removal: " << cloud_in->size() << std::endl;
-
-    // // 5. Radius Outlier Removal
-    // radius_outlier_removal_.setInputCloud(cloud_in);
-    // radius_outlier_removal_.filter(*cloud_out);
-    // cloud_in.swap(cloud_out);
-    // std::cout << "Points after radius outlier removal: " << cloud_in->size() << std::endl;
-
-    // 6. Downsample the remaining points
+    // 4) Downsample the remaining points
     voxel_grid_.setInputCloud(cloud_in);
     voxel_grid_.filter(*cloud_out);
     std::cout << "Number of points after downsampling: " << cloud_out->size() << std::endl;
@@ -236,45 +221,11 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::remove_points_near_sensor(const pc
     return filtered_cloud;
 }
 
-Sophus::SE3d Mapper3D::gicp_registration(const pcl::PointCloud<pcl::PointXYZ>::Ptr target,
-                                         const pcl::PointCloud<pcl::PointXYZ>::Ptr source,
-                                         const Sophus::SE3d& initial_transform_guess) {
-    Timer timer("Mapper3D::gicp_registration");
-
-    gicp_.setInputTarget(target);
-    gicp_.setInputSource(source);
-
-    pcl::PointCloud<pcl::PointXYZ> aligned_point_cloud;
-    gicp_.align(aligned_point_cloud, initial_transform_guess.matrix().cast<float>());
-
-    if (!gicp_.hasConverged()) {
-        std::cout << "Warning: GICP did not converge." << std::endl;
-    }
-
-    std::cout << "GICP fitness score: " << gicp_.getFitnessScore() << std::endl;
-    // std::cout << "GICP transformation matrix: " << std::endl;
-    // std::cout << gicp_.getFinalTransformation() << std::endl;
-
-    return eigen_to_sophus(gicp_.getFinalTransformation().cast<double>());
-}
-
-Sophus::SE3d Mapper3D::small_gicp_registration(const pcl::PointCloud<pcl::PointXYZ>::Ptr target,
-                                               const pcl::PointCloud<pcl::PointXYZ>::Ptr source,
-                                               const Sophus::SE3d& initial_transform_guess) {
-    Timer timer("Mapper3D::small_gicp_registration");
-
-    small_gicp_.setInputTarget(target);
-    small_gicp_.setInputSource(source);
-
-    pcl::PointCloud<pcl::PointXYZ> aligned_point_cloud;
-    small_gicp_.align(aligned_point_cloud, initial_transform_guess.matrix().cast<float>());
-
-    return eigen_to_sophus(small_gicp_.getFinalTransformation().cast<double>());
-}
-
 Sophus::SE3d Mapper3D::small_gicp_registration(const std::vector<Eigen::Vector3f>& target_points,
                                                const std::vector<Eigen::Vector3f>& source_points,
                                                const Sophus::SE3d& initial_transform_guess) {
+    Timer timer("Mapper3D::small_gicp_registration");
+
     // const Eigen::Isometry3d init_guess(initial_transform_guess.matrix());
 
     small_gicp::RegistrationSetting setting;

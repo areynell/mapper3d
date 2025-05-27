@@ -1,6 +1,6 @@
 #include "mapper3d/utils.h"
 
-#include "mapper3d/common.h"
+#include "mapper3d/timer.h"
 
 namespace mapper3d {
 namespace utils {
@@ -32,16 +32,17 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr point_vec_to_cloud(const std::vector<Eigen::
         }
         point_cloud->emplace_back(point.x(), point.y(), point.z());
     }
+
+    point_cloud->width = point_cloud->size();
+    point_cloud->height = 1;       // Set height to 1 for unorganized point cloud
+    point_cloud->is_dense = true;  // All points are finite
+
     return point_cloud;
 }
 
-double deg2rad(const double deg) {
-    return deg * (M_PI / 180.0);
-}
+double deg2rad(const double deg) { return deg * (M_PI / 180.0); }
 
-double rad2deg(const double rad) {
-    return rad * (180.0 / M_PI);
-}
+double rad2deg(const double rad) { return rad * (180.0 / M_PI); }
 
 }  // namespace utils
 }  // namespace mapper3d

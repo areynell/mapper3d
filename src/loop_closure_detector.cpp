@@ -16,15 +16,23 @@
 namespace mapper3d {
 
 LoopClosureDetector::LoopClosureDetector(const LoopClosureDetectorParams& params)
-    : kiss_resolution_(params.kiss_resolution),
-      kiss_config_(kiss_resolution_),
+    : kiss_config_(params.voxel_size),
       kiss_matcher_(kiss_config_),
       distance_threshold_(params.distance_threshold),
       num_inliers_threshold_(params.num_inliers_threshold),
-      num_prev_frames_to_skip_(params.num_prev_frames_to_skip) {}
+      num_prev_frames_to_skip_(params.num_prev_frames_to_skip) {
+    // TODO: Use a more representative odometry pose uncertainty/covariance
+    loop_closure_covariance_ = Eigen::Matrix<double, 6, 6>::Zero();
+    loop_closure_covariance_.block<3, 3>(0, 0) = Eigen::DiagonalMatrix<double, 3>(
+        params.x_loop_uncertainty, params.y_loop_uncertainty, params.z_loop_uncertainty);
+    loop_closure_covariance_.block<3, 3>(3, 3) = Eigen::DiagonalMatrix<double, 3>(
+        params.roll_loop_uncertainty, params.pitch_loop_uncertainty, params.yaw_loop_uncertainty);
 
-std::optional<LoopClosure> LoopClosureDetector::find_loop_closures(const Frame& frame) {
-    Timer timer("Loop closure detection");
+    std::cout << " loop_closure_covariance_ = " << std::endl << loop_closure_covariance_ << std::endl;
+}
+
+std::optional<LoopClosure> LoopClosureDetector::detect_loop_closures(const Frame& frame) {
+    Timer timer("LoopClosureDetector::detect_loop_closures");
 
     // clang-format off
     // Loop closure detection logic is as follows:
@@ -35,31 +43,33 @@ std::optional<LoopClosure> LoopClosureDetector::find_loop_closures(const Frame& 
     // 5) Return the loop closure
     // clang-format on
 
-    // TODO: Optimize this by first computing FasterPFH features and storing them in the frame
-    frames_.emplace(frame.id, frame);
+    update_submaps(frame);
 
     size_t max_num_inliers = 0;
     bool loop_closure_found = false;
-    Frame best_prev_frame;  // Only used for visualization
+    Submap best_submap;  // Only used for visualization
     LoopClosure best_loop_closure;
 
-    for (const auto& [prev_id, prev_frame] : frames_) {
-        if (frame.id == prev_id) {
+    for (const auto& [id, submap] : submaps_) {
+        if (frame.id == id) {
             continue;  // Skip the same frame
         }
         // Check that current frame isn't matched with a previous frame that is too close in time
-        if ((frame.id - prev_id) < num_prev_frames_to_skip_) {
+        if ((frame.id - id) < num_prev_frames_to_skip_) {
             continue;  // Skip frames that are too close
         }
 
         // Check if the distance between the two frames is below a certain threshold
-        const double distance = (frame.pose.translation() - prev_frame.pose.translation()).norm();
+        const double distance = (frame.pose.translation() - submap.origin_pose.translation()).norm();
         assert(distance >= 0.0);
         if (distance < distance_threshold_) {
             // TODO: Is it possible to call estimate directly on FasterPFH (keypoint, descriptor) pairs?
             // Perform KISS-Matcher global registration
-            const auto solution = kiss_matcher_.estimate(frame.point_cloud, prev_frame.point_cloud);
 
+            // TODO: Optimize this by first computing FasterPFH features and storing them in the submap
+            const auto solution = kiss_matcher_.estimate(frame.point_cloud, submap.downsampled_point_cloud_vec);
+            std::cout << "kiss_matcher_.getNumRotationInliers() = " << kiss_matcher_.getNumRotationInliers()
+                      << std::endl;
             std::cout << "kiss_matcher_.getNumFinalInliers() = " << kiss_matcher_.getNumFinalInliers()
                       << ", num_inliers_threshold_ = " << num_inliers_threshold_ << std::endl;
 
@@ -68,15 +78,20 @@ std::optional<LoopClosure> LoopClosureDetector::find_loop_closures(const Frame& 
                 kiss_matcher_.getNumFinalInliers() > max_num_inliers) {
                 loop_closure_found = true;
                 max_num_inliers = kiss_matcher_.getNumFinalInliers();
-                best_prev_frame = prev_frame;  // Store the best previous frame for visualization
-                const Sophus::SE3d relative_pose = Sophus::SE3d(solution.rotation, solution.translation);
+                best_submap = submap;  // Store the best previous frame for visualization
 
-                // TODO: Use a more representative covariance matrix
-                best_loop_closure =
-                    LoopClosure(prev_id, frame.id, relative_pose, Eigen::Matrix<double, 6, 6>::Identity());
+                // Find the closest pose in the submap to the current frame's pose
+                const auto [closest_pose_id, closest_pose_in_submap] = submap.find_closest_pose(frame.pose);
 
-                std::cout << "\033[33m" << "Found loop closure between frames " << prev_id << " and " << frame.id
-                          << " with " << max_num_inliers << " inliers." << "\033[0m" << std::endl;
+                // Compute relative pose from closest pose in submap to the current frame's pose
+                const Sophus::SE3d relative_pose_to_submap_origin(solution.rotation, solution.translation);
+                const Sophus::SE3d relative_pose =
+                    closest_pose_in_submap.inverse() * (submap.origin_pose * relative_pose_to_submap_origin);
+
+                best_loop_closure = LoopClosure(closest_pose_id, frame.id, relative_pose, loop_closure_covariance_);
+
+                std::cout << "\033[33m" << "Found loop closure between frames " << closest_pose_id << " and "
+                          << frame.id << " with " << max_num_inliers << " inliers." << "\033[0m" << std::endl;
             }
         }
     }
@@ -85,7 +100,7 @@ std::optional<LoopClosure> LoopClosureDetector::find_loop_closures(const Frame& 
         std::cout << "\033[32m" << "Found loop closure between frames " << best_loop_closure.prev_id << " and "
                   << best_loop_closure.id << " with " << max_num_inliers << " inliers." << "\033[0m" << std::endl;
 
-        visualize_point_cloud_alignment(best_prev_frame, frame, best_loop_closure.relative_pose, 1920, 1080, 200.0F,
+        visualize_point_cloud_alignment(best_submap, frame, best_loop_closure.relative_pose, 1920, 1080, 200.0F,
                                         200.0F);
 
         // // Perform GICP local registration to refine the match
@@ -103,18 +118,33 @@ std::optional<LoopClosure> LoopClosureDetector::find_loop_closures(const Frame& 
     return std::nullopt;  // No loop closure found
 }
 
-void LoopClosureDetector::visualize_point_cloud_alignment(const Frame& prev_frame, const Frame& frame,
+void LoopClosureDetector::update_submaps(const Frame& frame) {
+    if (!current_submap_.initialized()) {
+        current_submap_ = Submap(frame.id, frame.pose, utils::point_vec_to_cloud(frame.point_cloud));
+    }
+    current_submap_.add_point_cloud(frame.id, frame.pose, utils::point_vec_to_cloud(frame.point_cloud));
+
+    // If the submap is finalized, add it to submaps_ and start a new submap
+    if (current_submap_.finalized()) {
+        submaps_.emplace(current_submap_.id, current_submap_);
+        current_submap_ = Submap(frame.id, frame.pose, utils::point_vec_to_cloud(frame.point_cloud));
+    }
+}
+
+void LoopClosureDetector::visualize_point_cloud_alignment(const Submap& prev_submap, const Frame& frame,
                                                           const Sophus::SE3d& relative_pose, const size_t image_width,
                                                           const size_t image_height, const float view_range_x,
                                                           const float view_range_y) {
     // Transform previous point cloud from sensor frame to world frame
-    const pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud = utils::point_vec_to_cloud(prev_frame.point_cloud);
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud =
+        utils::point_vec_to_cloud(prev_submap.downsampled_point_cloud_vec);
     pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_prev_point_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-    pcl::transformPointCloud(*prev_point_cloud, *transformed_prev_point_cloud, prev_frame.pose.matrix().cast<double>());
+    pcl::transformPointCloud(*prev_point_cloud, *transformed_prev_point_cloud,
+                             prev_submap.origin_pose.matrix().cast<double>());
 
     // Transform current point cloud from sensor frame to world frame
     const pcl::PointCloud<pcl::PointXYZ>::Ptr current_point_cloud = utils::point_vec_to_cloud(frame.point_cloud);
-    const Sophus::SE3d corrected_sensor_pose = prev_frame.pose * relative_pose;
+    const Sophus::SE3d corrected_sensor_pose = prev_submap.origin_pose * relative_pose;
     pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_point_cloud(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::transformPointCloud(*current_point_cloud, *transformed_point_cloud,
                              corrected_sensor_pose.matrix().cast<double>());
@@ -171,7 +201,7 @@ void LoopClosureDetector::visualize_point_cloud_alignment(const Frame& prev_fram
     // cv::destroyWindow(window_name);  // Clean up the window
 
     // Save image to disk
-    std::string filename = std::to_string(prev_frame.id) + "_to_" + std::to_string(frame.id) + "_loop_closure.png";
+    std::string filename = std::to_string(prev_submap.id) + "_to_" + std::to_string(frame.id) + "_loop_closure.png";
     cv::imwrite(filename, loop_closure_image);
     std::cout << "Saved loop closure image: " << filename << std::endl;
 }

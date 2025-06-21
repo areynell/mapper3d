@@ -26,8 +26,8 @@ struct VisualizationData {
 };
 
 struct Mapper3DNodeParams {
-    int sub_queue_size = 1;
-    int pub_queue_size = 1;
+    int sub_queue_size = 100;
+    int pub_queue_size = 100;
 
     std::string map_frame_id = "map";
     std::string odom_frame_id = "odom";
@@ -56,7 +56,7 @@ class Mapper3DNode : public rclcpp::Node {
     void publish_keypoint_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const std::string &frame_id,
                                 const rclcpp::Time &timestamp);
 
-    void publish_pose_trajectory(const Sophus::SE3d &pose, const std::string &frame_id, const rclcpp::Time &timestamp);
+    void publish_pose_trajectory();
 
     void broadcast_transform(const Sophus::SE3d &transform, const std::string &frame_id,
                              const std::string &child_frame_id, const rclcpp::Time &timestamp);
@@ -85,8 +85,7 @@ class Mapper3DNode : public rclcpp::Node {
     size_t max_viz_queue_size_;  // Prevent unlimited backlog
     bool run_viz_thread_;
     std::queue<std::shared_ptr<VisualizationData>> viz_queue_;
-
-    nav_msgs::msg::Path pose_trajectory_;
+    std::chrono::duration<double> visualization_wait_timeout_;
 
     Sophus::SE3d map_to_sensor_transform_;
 

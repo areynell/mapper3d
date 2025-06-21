@@ -39,12 +39,12 @@ struct Mapper3DParams {
     double z_height_threshold = -1.0;  // Z height threshold for filtering (m)
     double min_sensor_distance = 3.0;  // Distance threshold for filtering points near the sensor (m)
 
-    double x_odom_uncertainty = 0.1;                       // X position uncertainty for lidar odometry (m)
-    double y_odom_uncertainty = 0.1;                       // Y position uncertainty for lidar odometry (m)
-    double z_odom_uncertainty = 0.5;                       // Z position uncertainty for lidar odometry (m)
-    double roll_odom_uncertainty = utils::deg2rad(15.0);   // Roll orientation uncertainty for lidar odometry (rad)
-    double pitch_odom_uncertainty = utils::deg2rad(15.0);  // Pitch orientation uncertainty for lidar odometry (rad)
-    double yaw_odom_uncertainty = utils::deg2rad(5.0);     // Yaw orientation uncertainty for lidar odometry (rad)
+    double x_odom_uncertainty = 0.02;                     // X position uncertainty for lidar odometry (m)
+    double y_odom_uncertainty = 0.02;                     // Y position uncertainty for lidar odometry (m)
+    double z_odom_uncertainty = 0.02;                     // Z position uncertainty for lidar odometry (m)
+    double roll_odom_uncertainty = utils::deg2rad(1.0);   // Roll orientation uncertainty for lidar odometry (rad)
+    double pitch_odom_uncertainty = utils::deg2rad(1.0);  // Pitch orientation uncertainty for lidar odometry (rad)
+    double yaw_odom_uncertainty = utils::deg2rad(1.0);    // Yaw orientation uncertainty for lidar odometry (rad)
 
     GICPParams gicp_params;
     GraphOptimizerParams graph_optimizer_params;
@@ -63,6 +63,7 @@ class Mapper3D {
     void spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud);
 
     Sophus::SE3d sensor_pose() const;
+    Sophus::SE3d corrected_sensor_pose() const;
 
     const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud() const;
 
@@ -72,14 +73,14 @@ class Mapper3D {
 
     const std::vector<Eigen::Vector3f> &kiss_matcher_keypoint_cloud() const;
 
+    const gtsam::Values &unoptimized_pose_graph() const;
+
+    const gtsam::Values &optimized_pose_graph() const;
+
    private:
     Sophus::SE3d estimate_lidar_odometry(const std::vector<Eigen::Vector3f> &prev_point_cloud,
                                          const std::vector<Eigen::Vector3f> &point_cloud,
                                          const Sophus::SE3d &prev_sensor_pose);
-
-    Sophus::SE3d eigen_to_sophus(const Eigen::Matrix4d &eigen_matrix);
-
-    Sophus::SE3d constrain_pose_to_se2(const Sophus::SE3d &pose);
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr filter_point_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud);
 
@@ -88,10 +89,6 @@ class Mapper3D {
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr remove_points_near_sensor(const pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
                                                                   const double min_distance);
-
-    Sophus::SE3d small_gicp_registration(const std::vector<Eigen::Vector3f> &target_points,
-                                         const std::vector<Eigen::Vector3f> &source_points,
-                                         const Sophus::SE3d &initial_transform_guess);
 
     void enqueue_visualization_data(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
                                     const Sophus::SE3d &sensor_pose);
@@ -117,6 +114,7 @@ class Mapper3D {
 
     Sophus::SE3d prev_sensor_pose_;
     Sophus::SE3d sensor_pose_;
+    Sophus::SE3d corrected_sensor_pose_;
 
     Eigen::Matrix<double, 6, 6> odometry_covariance_;
 

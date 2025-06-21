@@ -43,6 +43,8 @@ Mapper3DNode::Mapper3DNode(const Mapper3DNodeParams &params)
 
     viz_thread_ = std::thread(&Mapper3DNode::visualization_thread_func, this);
 
+    visualization_wait_timeout_ = std::chrono::duration<double>(10.0);  // 10 seconds
+
     RCLCPP_INFO(this->get_logger(), "Mapper3DNode initialized.");
 }
 
@@ -59,11 +61,12 @@ void Mapper3DNode::pointcloud_callback(const sensor_msgs::msg::PointCloud2::Shar
     }
     prev_timestamp_ = msg_time;
 
-    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    const auto cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
     pcl::fromROSMsg(*msg, *cloud);
 
     mapper3d_.spin_once(cloud);
-    map_to_sensor_transform_ = mapper3d_.sensor_pose();
+    // map_to_sensor_transform_ = mapper3d_.sensor_pose();
+    map_to_sensor_transform_ = mapper3d_.corrected_sensor_pose();
 
     broadcast_transform(map_to_sensor_transform_, map_frame_id_, sensor_frame_id_, msg->header.stamp);
 
@@ -73,6 +76,7 @@ void Mapper3DNode::pointcloud_callback(const sensor_msgs::msg::PointCloud2::Shar
 }
 
 void Mapper3DNode::enqueue_visualization_data(const rclcpp::Time &timestamp) {
+    // TODO: Do we really need a visualization data struct?
     // Instantiate visualization data struct
     auto viz_data = std::make_shared<VisualizationData>();
     viz_data->point_cloud = mapper3d_.point_cloud();
@@ -118,7 +122,8 @@ void Mapper3DNode::visualization_thread_func() {
 
         {
             std::unique_lock<std::mutex> lock(viz_mutex_);
-            viz_cv_.wait(lock, [this]() { return !viz_queue_.empty() || !run_viz_thread_; });
+            viz_cv_.wait_for(lock, visualization_wait_timeout_,
+                             [this]() { return !viz_queue_.empty() || !run_viz_thread_; });
 
             if (!run_viz_thread_) {
                 break;
@@ -130,6 +135,7 @@ void Mapper3DNode::visualization_thread_func() {
             }
         }
 
+        // TODO: Should we remove this check?
         if (viz_data) {
             auto kiss_matcher_point_cloud = mapper3d::utils::point_vec_to_cloud(viz_data->kiss_matcher_point_cloud);
             auto kiss_matcher_keypoints = mapper3d::utils::point_vec_to_cloud(viz_data->kiss_matcher_keypoint_cloud);
@@ -139,8 +145,8 @@ void Mapper3DNode::visualization_thread_func() {
             // point cloud warping
             // publish_point_cloud(kiss_matcher_point_cloud, sensor_frame_id_, viz_data->timestamp);
             publish_keypoint_cloud(kiss_matcher_keypoints, sensor_frame_id_, viz_data->timestamp);
-            publish_pose_trajectory(viz_data->sensor_pose, map_frame_id_, viz_data->timestamp);
         }
+        publish_pose_trajectory();
     }
 }
 
@@ -164,25 +170,42 @@ void Mapper3DNode::publish_keypoint_cloud(const pcl::PointCloud<pcl::PointXYZ>::
     keypoint_pub_->publish(point_cloud_msg);
 }
 
-void Mapper3DNode::publish_pose_trajectory(const Sophus::SE3d &pose, const std::string &frame_id,
-                                           const rclcpp::Time &timestamp) {
-    geometry_msgs::msg::PoseStamped pose_stamped;
-    pose_stamped.header.stamp = timestamp;
-    pose_stamped.header.frame_id = frame_id;
+void Mapper3DNode::publish_pose_trajectory() {
+    if (pose_trajectory_pub_->get_subscription_count() > 0) {
+        // TODO: Visualize loop closure constraints as well
+        const gtsam::Values graph = mapper3d_.optimized_pose_graph();
+        // const gtsam::Values graph = mapper3d_.unoptimized_pose_graph();
 
-    pose_stamped.pose.position.x = pose.translation().x();
-    pose_stamped.pose.position.y = pose.translation().y();
-    pose_stamped.pose.position.z = pose.translation().z();
-    pose_stamped.pose.orientation.x = pose.unit_quaternion().x();
-    pose_stamped.pose.orientation.y = pose.unit_quaternion().y();
-    pose_stamped.pose.orientation.z = pose.unit_quaternion().z();
-    pose_stamped.pose.orientation.w = pose.unit_quaternion().w();
+        nav_msgs::msg::Path path;
+        path.header.stamp = this->now();
+        path.header.frame_id = map_frame_id_;
+        path.poses.reserve(graph.size());
 
-    pose_trajectory_.header.stamp = timestamp;
-    pose_trajectory_.header.frame_id = frame_id;
-    pose_trajectory_.poses.push_back(pose_stamped);
+        for (const auto &[key, value] : graph) {
+            const gtsam::Pose3 pose = value.cast<gtsam::Pose3>();
 
-    pose_trajectory_pub_->publish(pose_trajectory_);
+            geometry_msgs::msg::PoseStamped pose_stamped;
+            pose_stamped.header.stamp = path.header.stamp;
+            pose_stamped.header.frame_id = path.header.frame_id;
+
+            pose_stamped.pose.position.x = pose.translation().x();
+            pose_stamped.pose.position.y = pose.translation().y();
+            pose_stamped.pose.position.z = pose.translation().z();
+
+            const auto quat = pose.rotation().toQuaternion();
+            pose_stamped.pose.orientation.x = quat.x();
+            pose_stamped.pose.orientation.y = quat.y();
+            pose_stamped.pose.orientation.z = quat.z();
+            pose_stamped.pose.orientation.w = quat.w();
+
+            path.poses.emplace_back(pose_stamped);
+        }
+
+        assert(path.poses.size() == graph.size());
+
+        // std::cout << "Publishing pose graph\n";
+        pose_trajectory_pub_->publish(path);
+    }
 }
 
 int main(int argc, char **argv) {

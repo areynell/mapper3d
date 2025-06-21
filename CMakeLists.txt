@@ -50,6 +50,7 @@ find_package(kiss_matcher REQUIRED)
 find_package(PCL CONFIG REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(cv_bridge REQUIRED)
 find_package(GTSAM CONFIG REQUIRED)
 find_package(small_gicp REQUIRED)
 
@@ -57,6 +58,7 @@ find_package(small_gicp REQUIRED)
 include_directories(
   include
   3rdparty/small_gicp/include
+  3rdparty/Scancontext
   ${PCL_INCLUDE_DIRS}
   ${Sophus_INCLUDE_DIRS}
 )
@@ -66,6 +68,7 @@ add_library(utils src/utils.cpp)
 target_link_libraries(utils
   ${PCL_LIBRARIES}
   Eigen3::Eigen
+  small_gicp::small_gicp
 )
 
 add_library(common_dependencies INTERFACE)
@@ -81,10 +84,15 @@ target_include_directories(common_dependencies INTERFACE
   $<INSTALL_INTERFACE:include>
 )
 
-add_library(loop_closure_detector src/loop_closure_detector.cpp)
+add_library(loop_closure_detector
+  src/loop_closure_detector.cpp
+  3rdparty/Scancontext/Scancontext.cpp
+)
 target_link_libraries(loop_closure_detector
   ${PCL_LIBRARIES}
+  ${pcl_conversions_LIBRARIES}
   ${OpenCV_LIBS}
+  cv_bridge::cv_bridge
   Sophus::Sophus
   Eigen3::Eigen
   TBB::tbb
@@ -93,6 +101,10 @@ target_link_libraries(loop_closure_detector
   robin::robin
   kiss_matcher::kiss_matcher_core
   common_dependencies
+)
+target_include_directories(loop_closure_detector PUBLIC
+  ${PCL_INCLUDE_DIRS}
+  ${pcl_conversions_INCLUDE_DIRS}
 )
 
 add_library(graph_optimizer src/graph_optimizer.cpp)
@@ -116,7 +128,6 @@ target_link_libraries(mapper3d
   teaserpp::teaser_io
   robin::robin
   kiss_matcher::kiss_matcher_core
-  small_gicp::small_gicp
   common_dependencies
 )
 target_include_directories(mapper3d PUBLIC

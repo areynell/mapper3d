@@ -7,6 +7,7 @@
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
 
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <queue>
@@ -49,24 +50,40 @@ class GraphOptimizer {
 
     void optimize();
 
+    void update_map_to_odom_transform();
+
+    const gtsam::Values& unoptimized_pose_graph() const;
+
+    const gtsam::Values& optimized_pose_graph() const;
+
+    Sophus::SE3d map_to_odom_transform();
+
    private:
     gtsam::LevenbergMarquardtParams lm_params_;
     gtsam::GncParams<gtsam::LevenbergMarquardtParams> gnc_params_;
 
+    size_t current_pose_index_;
+
+    std::mutex graph_mutex_;
     gtsam::NonlinearFactorGraph graph_;
     gtsam::Values initial_estimates_;
     gtsam::Values optimized_estimates_;
-    size_t current_pose_index_;
+    bool incremental_optimization_;
 
+    bool stop_processing_frames_;
     std::mutex unprocessed_frames_mutex_;
     std::queue<Frame> unprocessed_frames_;
     std::condition_variable frame_processing_cv_;
-
-    bool stop_processing_frames_;
     std::thread frame_processing_thread_;
-    std::mutex graph_mutex_;
 
+    std::chrono::steady_clock::time_point most_recent_optimization_time_;
+    std::chrono::duration<double> optimization_trigger_interval_;
+    size_t min_new_loop_closures_for_optimization_;
+    size_t num_new_loop_closures_;
     LoopClosureDetector loop_closure_detector_;
+
+    std::mutex map_to_odom_transform_mutex_;
+    Sophus::SE3d map_to_odom_transform_;
 };
 
 }  // namespace mapper3d

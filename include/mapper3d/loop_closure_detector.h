@@ -1,11 +1,10 @@
-#include <pcl/visualization/pcl_visualizer.h>
-
 #include <kiss_matcher/FasterPFH.hpp>
 #include <kiss_matcher/KISSMatcher.hpp>
 #include <optional>
 #include <sophus/se3.hpp>
 #include <unordered_map>
 
+#include "Scancontext.h"
 #include "mapper3d/common.h"
 #include "mapper3d/utils.h"
 
@@ -26,12 +25,12 @@ struct LoopClosureDetectorParams {
     double position_uncertainty = 2.5;                      // Position uncertainty for loop closure detection (m)
     double orientation_uncertainty = utils::deg2rad(40.0);  // Orientation uncertainty for loop closure detection (rad)
 
-    double x_loop_uncertainty = 2.5;                       // X position uncertainty for loop closures (m)
-    double y_loop_uncertainty = 2.5;                       // Y position uncertainty for loop closures (m)
-    double z_loop_uncertainty = 5.0;                       // Z position uncertainty for loop closures (m)
-    double roll_loop_uncertainty = utils::deg2rad(50.0);   // Roll orientation uncertainty for loop closures (rad)
-    double pitch_loop_uncertainty = utils::deg2rad(50.0);  // Pitch orientation uncertainty for loop closures (rad)
-    double yaw_loop_uncertainty = utils::deg2rad(30.0);    // Yaw orientation uncertainty for loop closures (rad)
+    double x_loop_uncertainty = 0.05;                     // X position uncertainty for loop closures (m)
+    double y_loop_uncertainty = 0.05;                     // Y position uncertainty for loop closures (m)
+    double z_loop_uncertainty = 0.05;                     // Z position uncertainty for loop closures (m)
+    double roll_loop_uncertainty = utils::deg2rad(3.0);   // Roll orientation uncertainty for loop closures (rad)
+    double pitch_loop_uncertainty = utils::deg2rad(3.0);  // Pitch orientation uncertainty for loop closures (rad)
+    double yaw_loop_uncertainty = utils::deg2rad(3.0);    // Yaw orientation uncertainty for loop closures (rad)
 };
 
 struct LoopClosure {
@@ -73,6 +72,8 @@ class LoopClosureDetector {
 
     Submap current_submap_;  // Current submap being built
     std::unordered_map<size_t, Submap> submaps_;
-    std::shared_ptr<pcl::visualization::PCLVisualizer> viewer_;
+    std::unordered_map<size_t, Frame> frames_;  // Used with ScanContext++ for loop closure detection
+
+    SCManager scan_context_manager_;  // ScanContext manager for loop closure detection
 };
 }  // namespace mapper3d

@@ -6,21 +6,19 @@
 #include <pcl/visualization/pcl_visualizer.h>
 
 #include <cassert>
+#include <iostream>
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include "mapper3d/common.h"
+#include "mapper3d/logging.h"
 #include "mapper3d/utils.h"
 
 namespace mapper3d {
 
 LoopClosureDetector::LoopClosureDetector(const LoopClosureDetectorParams& params)
-    : kiss_config_(params.voxel_size),
-      kiss_matcher_(kiss_config_),
-      distance_threshold_(params.distance_threshold),
-      num_inliers_threshold_(params.num_inliers_threshold),
-      num_prev_frames_to_skip_(params.num_prev_frames_to_skip) {
+    : kiss_config_(params.voxel_size), kiss_matcher_(kiss_config_) {
     // TODO: Use a more representative odometry pose uncertainty/covariance
     loop_closure_covariance_ = Eigen::Matrix<double, 6, 6>::Zero();
     loop_closure_covariance_.block<3, 3>(0, 0) = Eigen::DiagonalMatrix<double, 3>(
@@ -28,14 +26,14 @@ LoopClosureDetector::LoopClosureDetector(const LoopClosureDetectorParams& params
     loop_closure_covariance_.block<3, 3>(3, 3) = Eigen::DiagonalMatrix<double, 3>(
         params.roll_loop_uncertainty, params.pitch_loop_uncertainty, params.yaw_loop_uncertainty);
 
-    std::cout << " loop_closure_covariance_ = " << std::endl << loop_closure_covariance_ << std::endl;
+    std::cout << "loop_closure_covariance_ = " << std::endl << loop_closure_covariance_ << std::endl;
 }
 
 std::optional<LoopClosure> LoopClosureDetector::detect_loop_closures(const Frame& frame) {
-    Timer timer("LoopClosureDetector::detect_loop_closures");
+    Timer timer(__func__, LogLevel::Debug);
 
     // TODO: Match submaps instead of single point clouds to get better loop closure detection
-
+    // TODO: Should the poses in frames_ be updated after graph optimization?
     frames_.emplace(frame.id, frame);  // Store the current frame for future reference
 
     scan_context_manager_.makeAndSaveScancontextAndKeys(*utils::point_vec_to_cloud(frame.point_cloud));
@@ -45,7 +43,7 @@ std::optional<LoopClosure> LoopClosureDetector::detect_loop_closures(const Frame
     const int nearest_frame_id = nearest_frame_id_and_relative_yaw.first;
     const float relative_yaw = nearest_frame_id_and_relative_yaw.second;
     if (nearest_frame_id == -1) {
-        std::cout << "\033[31m" << "No loop closure found for current frame " << frame.id << "\033[0m" << std::endl;
+        // std::cout << "\033[31m" << "No loop closure found for current frame " << frame.id << "\033[0m" << std::endl;
         return std::nullopt;  // No loop closure found
     }
 
@@ -57,8 +55,8 @@ std::optional<LoopClosure> LoopClosureDetector::detect_loop_closures(const Frame
 
     const auto loop_closure = LoopClosure(nearest_frame_id, frame.id, refined_relative_pose, loop_closure_covariance_);
 
-    std::cout << "\033[32m" << "Found loop closure between frames " << loop_closure.prev_id << " and "
-              << loop_closure.id << "\033[0m" << std::endl;
+    Logger::info_important("Found loop closure between frames " + std::to_string(loop_closure.prev_id) + " and " +
+                           std::to_string(loop_closure.id));
 
     return loop_closure;
 }
@@ -148,7 +146,7 @@ void LoopClosureDetector::visualize_point_cloud_alignment(const Submap& prev_sub
     // Save image to disk
     std::string filename = std::to_string(prev_submap.id) + "_to_" + std::to_string(frame.id) + "_loop_closure.png";
     cv::imwrite(filename, loop_closure_image);
-    std::cout << "Saved loop closure image: " << filename << std::endl;
+    Logger::debug("Saved loop closure image: " + filename);
 }
 
 }  // namespace mapper3d

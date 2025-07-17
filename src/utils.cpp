@@ -2,13 +2,13 @@
 
 #include <vector>
 
-#include "mapper3d/timer.h"
+#include "mapper3d/logging.h"
 
 namespace mapper3d {
 namespace utils {
 
 std::vector<Eigen::Vector3f> point_cloud_to_vec(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) {
-    Timer timer("Mapper3D::point_cloud_to_vec");
+    Timer timer(__func__, LogLevel::Debug);
 
     std::vector<Eigen::Vector3f> point_vec;
     point_vec.reserve(point_cloud->size());
@@ -23,7 +23,7 @@ std::vector<Eigen::Vector3f> point_cloud_to_vec(const pcl::PointCloud<pcl::Point
 }
 
 pcl::PointCloud<pcl::PointXYZ>::Ptr point_vec_to_cloud(const std::vector<Eigen::Vector3f>& point_vec) {
-    Timer timer("Mapper3D::point_vec_to_cloud");
+    Timer timer(__func__, LogLevel::Debug);
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud(new pcl::PointCloud<pcl::PointXYZ>);
     point_cloud->reserve(point_vec.size());
@@ -45,7 +45,7 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr point_vec_to_cloud(const std::vector<Eigen::
 Sophus::SE3d small_gicp_registration(const std::vector<Eigen::Vector3f>& target_points,
                                      const std::vector<Eigen::Vector3f>& source_points,
                                      const Sophus::SE3d& initial_transform_guess) {
-    Timer timer("small_gicp_registration");
+    Timer timer(__func__, LogLevel::Debug);
 
     // const Eigen::Isometry3d init_guess(initial_transform_guess.matrix());
 
@@ -54,9 +54,9 @@ Sophus::SE3d small_gicp_registration(const std::vector<Eigen::Vector3f>& target_
     small_gicp::RegistrationResult result =
         small_gicp::align(target_points, source_points, Eigen::Isometry3d(initial_transform_guess.matrix()), setting);
 
-    std::cout << "Small GICP num inliers: " << result.num_inliers << std::endl;
-    std::cout << "Small GICP error: " << result.error << std::endl;
-    std::cout << "Small GICP converged: " << result.converged << std::endl;
+    Logger::debug("Small GICP num inliers: " + std::to_string(result.num_inliers));
+    Logger::debug("Small GICP error: " + std::to_string(result.error));
+    Logger::debug("Small GICP converged: " + std::to_string(result.converged));
 
     return eigen_to_sophus(result.T_target_source.matrix());
 }

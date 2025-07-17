@@ -14,6 +14,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <string>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 #include "mapper3d/mapper3d.h"
 
@@ -39,6 +40,8 @@ struct Mapper3DNodeParams {
     std::string point_cloud_pub_topic = "/filtered_points";
     std::string keypoint_pub_topic = "/keypoints";
     std::string pose_trajectory_pub_topic = "/pose_trajectory";
+    std::string loop_closure_pub_topic = "/loop_closures";
+    std::string map_pub_topic = "/map";
 
     mapper3d::Mapper3DParams mapper3d_params;
 };
@@ -57,6 +60,8 @@ class Mapper3DNode : public rclcpp::Node {
                                 const rclcpp::Time &timestamp);
 
     void publish_pose_trajectory();
+    void publish_loop_closures();
+    void publish_map();
 
     void broadcast_transform(const Sophus::SE3d &transform, const std::string &frame_id,
                              const std::string &child_frame_id, const rclcpp::Time &timestamp);
@@ -69,6 +74,8 @@ class Mapper3DNode : public rclcpp::Node {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_cloud_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr keypoint_pub_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pose_trajectory_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr loop_closure_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub_;
 
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 

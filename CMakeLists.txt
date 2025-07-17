@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
+project(mapper3d)
 
 # set(CMAKE_CXX_COMPILER clang++)
 set(CMAKE_CXX_STANDARD 17)
@@ -12,6 +13,7 @@ set(CMAKE_CXX_STANDARD 17)
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native -mtune=native")
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
 # set(CMAKE_CXX_FLAGS "-g -O2")
+# set(CMAKE_CXX_FLAGS "-O0 -g3 -ggdb")
 
 # # Multiple build types for different use cases
 # if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -28,8 +30,6 @@ set(CMAKE_CXX_STANDARD 17)
 #     set(CMAKE_CXX_FLAGS_PROFILE "-O2 -g -DNDEBUG -march=native")  # Fast + debuggable
 # endif()
 
-project(mapper3d)
-
 # Find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -40,6 +40,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 find_package(Eigen3 REQUIRED)
 find_package(Sophus CONFIG REQUIRED)
@@ -53,8 +54,10 @@ find_package(OpenCV REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(GTSAM CONFIG REQUIRED)
 find_package(small_gicp REQUIRED)
+find_package(blosc CONFIG REQUIRED)
+find_package(OpenVDB CONFIG REQUIRED)
 
-# Include directories
+ # Include directories
 include_directories(
   include
   3rdparty/small_gicp/include
@@ -113,6 +116,8 @@ target_link_libraries(graph_optimizer
   Sophus::Sophus
   Eigen3::Eigen
   gtsam
+  OpenVDB::openvdb
+  blosc_static # Required for OpenVDB
   common_dependencies
 )
 
@@ -148,6 +153,7 @@ ament_target_dependencies(mapper3d_node
   nav_msgs
   geometry_msgs
   pcl_conversions
+  visualization_msgs
 )
 
 add_executable(kitti_to_ros2_bag src/kitti_to_ros2_bag.cpp)

@@ -8,30 +8,31 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
-#include <mutex>
 #include <small_gicp/registration/registration_helper.hpp>
-#include <thread>
 #include <vector>
 
 #include "mapper3d/common.h"
 #include "mapper3d/graph_optimizer.h"
+#include "mapper3d/logging.h"
 #include "mapper3d/utils.h"
 
 namespace mapper3d {
 
 Mapper3D::Mapper3D(const Mapper3DParams& params)
-    : prev_sensor_pose_(Sophus::SE3d()),
-      sensor_pose_(Sophus::SE3d()),
-      corrected_sensor_pose_(Sophus::SE3d()),
+    : prev_sensor_pose_odom_frame_(Sophus::SE3d()),
+      sensor_pose_odom_frame_(Sophus::SE3d()),
+      sensor_pose_map_frame_(Sophus::SE3d()),
       z_height_threshold_(params.z_height_threshold),
       min_sensor_distance_(params.min_sensor_distance),
       kiss_config_(params.voxel_size),
       kiss_matcher_(kiss_config_),
       graph_optimizer_(params.graph_optimizer_params),
       constrain_pose_to_se2_(false),
-      viewer_initialized_(false),
       max_point_cloud_history_(50),
       pose_id_(0) {
+    Logger::set_global_log_level(LogLevel::Info);
+    Timer::set_global_log_level(LogLevel::Info);
+
     // TODO: Use a more representative odometry pose uncertainty/covariance
     odometry_covariance_ = Eigen::Matrix<double, 6, 6>::Zero();
     odometry_covariance_.block<3, 3>(0, 0) = Eigen::DiagonalMatrix<double, 3>(
@@ -39,28 +40,13 @@ Mapper3D::Mapper3D(const Mapper3DParams& params)
     odometry_covariance_.block<3, 3>(3, 3) = Eigen::DiagonalMatrix<double, 3>(
         params.roll_odom_uncertainty, params.pitch_odom_uncertainty, params.yaw_odom_uncertainty);
 
-    std::cout << " odometry_covariance_ = " << std::endl << odometry_covariance_ << std::endl;
+    std::cout << "odometry_covariance_ = \n" << odometry_covariance_ << std::endl;
 
     voxel_grid_.setLeafSize(params.voxel_size, params.voxel_size, params.voxel_size);
-
-    // viz_thread_ = std::thread(&Mapper3D::visualization_thread_func, this);
-    // run_viz_thread_ = true;
 }
 
-// Mapper3D::~Mapper3D() {
-//     {
-//         std::unique_lock<std::mutex> lock(viz_mutex_);
-//         run_viz_thread_ = false;
-//         new_viz_data_available_ = true;  // Ensure the thread wakes up
-//     }
-//     viz_cv_.notify_one();
-//     if (viz_thread_.joinable()) {
-//         viz_thread_.join();
-//     }
-// }
-
 void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) {
-    Timer timer("Mapper3D::spin_once");
+    Timer timer(__func__, LogLevel::Info);
 
     if (point_cloud->empty()) {
         return;
@@ -75,30 +61,31 @@ void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) 
         return;
     }
 
-    // TODO: Maybe call this odometry_sensor_pose, since it can drift?
-    sensor_pose_ = estimate_lidar_odometry(prev_point_cloud_vec_, point_cloud_vec_, prev_sensor_pose_);
+    sensor_pose_odom_frame_ =
+        estimate_lidar_odometry(prev_point_cloud_vec_, point_cloud_vec_, prev_sensor_pose_odom_frame_);
 
-    graph_optimizer_.add_frame(Frame(pose_id_, sensor_pose_, point_cloud_vec_, odometry_covariance_));
+    graph_optimizer_.add_frame(Frame(pose_id_, sensor_pose_odom_frame_, point_cloud_vec_, odometry_covariance_));
 
     const Sophus::SE3d map_to_odom_transform = graph_optimizer_.map_to_odom_transform();
-    corrected_sensor_pose_ = map_to_odom_transform * sensor_pose_;
-
-    // enqueue_visualization_data(point_cloud_, sensor_pose_);
+    // Very important: This is the drift-corrected pose after loop closure detection and graph optimization
+    sensor_pose_map_frame_ = map_to_odom_transform * sensor_pose_odom_frame_;
 
     prev_point_cloud_vec_ = point_cloud_vec_;
-    prev_sensor_pose_ = sensor_pose_;
+    prev_sensor_pose_odom_frame_ = sensor_pose_odom_frame_;
     pose_id_++;
 }
 
 Sophus::SE3d Mapper3D::estimate_lidar_odometry(const std::vector<Eigen::Vector3f>& prev_point_cloud,
                                                const std::vector<Eigen::Vector3f>& point_cloud,
                                                const Sophus::SE3d& prev_sensor_pose) {
-    Timer timer("Mapper3D::estimate_lidar_odometry");
+    Timer timer(__func__, LogLevel::Debug);
 
     const auto solution = kiss_matcher_.estimate(point_cloud, prev_point_cloud);
     // kiss_matcher_.print();
-    // std::cout << "kiss_matcher_.getNumRotationInliers() = " << kiss_matcher_.getNumRotationInliers() << std::endl;
-    // std::cout << "kiss_matcher_.getNumFinalInliers() = " << kiss_matcher_.getNumFinalInliers() << std::endl;
+    // Logger::debug("kiss_matcher_.getNumRotationInliers() = " +
+    // std::to_string(kiss_matcher_.getNumRotationInliers()));
+    // Logger::debug("kiss_matcher_.getNumFinalInliers() = " +
+    // std::to_string(kiss_matcher_.getNumFinalInliers()));
 
     const Sophus::SE3d sensor_pose_change = Sophus::SE3d(solution.rotation, solution.translation);
 
@@ -126,28 +113,11 @@ Sophus::SE3d Mapper3D::estimate_lidar_odometry(const std::vector<Eigen::Vector3f
     return sensor_pose;
 }
 
-void Mapper3D::enqueue_visualization_data(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
-                                          const Sophus::SE3d& sensor_pose) {
-    auto frame = std::make_shared<PointCloudFrame>();
-    frame->point_cloud = point_cloud;
-    frame->sensor_pose = sensor_pose;
-
-    {
-        std::scoped_lock<std::mutex> lock(viz_mutex_);
-        // Prevent queue from growing too large if visualization can't keep up
-        while (viz_queue_.size() >= max_point_cloud_history_) {
-            viz_queue_.pop();
-        }
-        viz_queue_.push(frame);
-    }
-    viz_cv_.notify_one();
-}
-
 pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::filter_point_cloud(
     const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) {
-    Timer timer("Mapper3D::filter_point_cloud");
+    Timer timer(__func__, LogLevel::Debug);
 
-    std::cout << "Number of points in original point cloud: " << point_cloud->size() << std::endl;
+    Logger::debug("Number of points in original point cloud: " + std::to_string(point_cloud->size()));
 
     // Use two pointers to manage intermediate results
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_in = point_cloud;
@@ -157,22 +127,22 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::filter_point_cloud(
     std::vector<int> nan_indices;
     pcl::removeNaNFromPointCloud(*cloud_in, *cloud_out, nan_indices);
     cloud_in.swap(cloud_out);
-    std::cout << "Points after NaN removal: " << cloud_in->size() << std::endl;
+    Logger::debug("Number of points after NaN removal: " + std::to_string(cloud_in->size()));
 
     // 2) Remove points near the sensor
     cloud_out = remove_points_near_sensor(cloud_in, min_sensor_distance_);
     cloud_in.swap(cloud_out);
-    std::cout << "Points after near sensor removal: " << cloud_in->size() << std::endl;
+    Logger::debug("Number of points after near sensor removal: " + std::to_string(cloud_in->size()));
 
     // 3) Remove points below z-height threshold
     cloud_out = remove_points_below_z(cloud_in, z_height_threshold_);
     cloud_in.swap(cloud_out);
-    std::cout << "Points after z-height removal: " << cloud_in->size() << std::endl;
+    Logger::debug("Number of points after z-height removal: " + std::to_string(cloud_in->size()));
 
     // 4) Downsample the remaining points
     voxel_grid_.setInputCloud(cloud_in);
     voxel_grid_.filter(*cloud_out);
-    std::cout << "Number of points after downsampling: " << cloud_out->size() << std::endl;
+    Logger::debug("Number of points after downsampling: " + std::to_string(cloud_out->size()));
     // The final result is now in cloud_out
 
     return cloud_out;  // Return the final filtered cloud
@@ -180,7 +150,7 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::filter_point_cloud(
 
 pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::remove_points_below_z(const pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
                                                                     const double z_threshold) {
-    Timer timer("Mapper3D::remove_points_below_z");
+    Timer timer(__func__, LogLevel::Debug);
 
     auto filtered_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
 
@@ -195,7 +165,7 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::remove_points_below_z(const pcl::P
 
 pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::remove_points_near_sensor(const pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
                                                                         const double min_distance) {
-    Timer timer("Mapper3D::remove_points_near_sensor");
+    Timer timer(__func__, LogLevel::Debug);
 
     auto filtered_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
     filtered_cloud->reserve(cloud->size());
@@ -239,8 +209,8 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::remove_points_near_sensor(const pc
 //     return sensor_pose_change;
 // }
 
-Sophus::SE3d Mapper3D::sensor_pose() const { return sensor_pose_; }
-Sophus::SE3d Mapper3D::corrected_sensor_pose() const { return corrected_sensor_pose_; }
+Sophus::SE3d Mapper3D::sensor_pose_odom_frame() const { return sensor_pose_odom_frame_; }
+Sophus::SE3d Mapper3D::sensor_pose_map_frame() const { return sensor_pose_map_frame_; }
 
 const pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::point_cloud() const { return point_cloud_; }
 
@@ -252,84 +222,9 @@ const std::vector<Eigen::Vector3f>& Mapper3D::kiss_matcher_point_cloud() const {
 
 const std::vector<Eigen::Vector3f>& Mapper3D::kiss_matcher_keypoint_cloud() const { return kiss_matcher_keypoints_; }
 
-void Mapper3D::visualization_thread_func() {
-    while (run_viz_thread_) {
-        std::shared_ptr<PointCloudFrame> frame;
-
-        {
-            std::unique_lock<std::mutex> lock(viz_mutex_);
-            viz_cv_.wait(lock, [this]() { return !viz_queue_.empty() || !run_viz_thread_; });
-
-            if (!run_viz_thread_) {
-                break;
-            }
-
-            if (!viz_queue_.empty()) {
-                frame = viz_queue_.front();
-                viz_queue_.pop();
-            }
-        }
-
-        if (frame) {
-            visualize_aligned_point_clouds(frame->point_cloud, frame->sensor_pose, 1920, 1080, 100.0);
-        }
-    }
-}
-
-void Mapper3D::visualize_aligned_point_clouds(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, Sophus::SE3d& pose,
-                                              const size_t h_res, const size_t v_res, const double view_height) {
-    Timer timer("Mapper3D::visualize_aligned_point_clouds");
-
-    // Initialize viewer if needed
-    if (!viewer_initialized_) {
-        point_cloud_ids_.clear();
-        point_cloud_counter_ = 0;
-
-        viewer_ = pcl::visualization::PCLVisualizer::Ptr(new pcl::visualization::PCLVisualizer("3D Viewer"));
-        viewer_->setBackgroundColor(0, 0, 0);
-        viewer_->initCameraParameters();
-        viewer_->setSize(h_res, v_res);
-        viewer_initialized_ = true;
-    }
-
-    // If we've reached the maximum number of point clouds, remove the oldest one
-    if (point_cloud_ids_.size() >= max_point_cloud_history_ && !point_cloud_ids_.empty()) {
-        std::string oldest_id = point_cloud_ids_.front();
-        viewer_->removePointCloud(oldest_id);
-        point_cloud_ids_.pop_front();
-    }
-
-    // Create a unique ID for current point cloud
-    const std::string point_cloud_id = "point_cloud_" + std::to_string(point_cloud_counter_++);
-    point_cloud_ids_.push_back(point_cloud_id);
-
-    // Transform current point cloud from sensor frame to world frame
-    auto transformed_point_cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
-    const Eigen::Matrix4f transform = pose.matrix().cast<float>();
-    pcl::transformPointCloud(*point_cloud, *transformed_point_cloud, transform);
-
-    // Add current point cloud to viewer
-    const pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> color_handler(transformed_point_cloud, 255,
-                                                                                        255, 255);
-    viewer_->addPointCloud(transformed_point_cloud, color_handler, point_cloud_id);
-    viewer_->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, point_cloud_id);
-
-    // Update or add coordinate system
-    viewer_->removeAllCoordinateSystems();
-    const Eigen::Affine3f current_transform(pose.matrix().cast<float>());
-    viewer_->addCoordinateSystem(1.0, current_transform);
-
-    // Set viewer camera position
-    const Eigen::Vector3d position = pose.translation();
-    viewer_->setCameraPosition(position.x(), position.y(), position.z() + view_height,  // Camera position
-                               position.x(), position.y(), position.z(),                // Look at point
-                               0.0, 1.0, 0.0);                                          // Up vector
-
-    viewer_->spinOnce();
-}
-
-const gtsam::Values& Mapper3D::unoptimized_pose_graph() const { return graph_optimizer_.unoptimized_pose_graph(); }
-
-const gtsam::Values& Mapper3D::optimized_pose_graph() const { return graph_optimizer_.optimized_pose_graph(); }
-
+pcl::PointCloud<pcl::PointXYZ> Mapper3D::get_map() { return graph_optimizer_.get_map(); }
+gtsam::Values Mapper3D::get_unoptimized_poses() { return graph_optimizer_.get_unoptimized_poses(); }
+gtsam::Values Mapper3D::get_optimized_poses() { return graph_optimizer_.get_optimized_poses(); }
+gtsam::Values Mapper3D::get_online_poses() { return graph_optimizer_.get_online_poses(); }
+gtsam::NonlinearFactorGraph Mapper3D::get_graph() { return graph_optimizer_.get_graph(); }
 }  // namespace mapper3d

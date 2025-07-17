@@ -62,8 +62,8 @@ class Mapper3D {
 
     void spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud);
 
-    Sophus::SE3d sensor_pose() const;
-    Sophus::SE3d corrected_sensor_pose() const;
+    Sophus::SE3d sensor_pose_odom_frame() const;
+    Sophus::SE3d sensor_pose_map_frame() const;
 
     const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud() const;
 
@@ -73,9 +73,15 @@ class Mapper3D {
 
     const std::vector<Eigen::Vector3f> &kiss_matcher_keypoint_cloud() const;
 
-    const gtsam::Values &unoptimized_pose_graph() const;
+    gtsam::Values get_unoptimized_poses();
 
-    const gtsam::Values &optimized_pose_graph() const;
+    gtsam::Values get_optimized_poses();
+
+    gtsam::Values get_online_poses();
+
+    gtsam::NonlinearFactorGraph get_graph();
+
+    pcl::PointCloud<pcl::PointXYZ> get_map();
 
    private:
     Sophus::SE3d estimate_lidar_odometry(const std::vector<Eigen::Vector3f> &prev_point_cloud,
@@ -93,11 +99,6 @@ class Mapper3D {
     void enqueue_visualization_data(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
                                     const Sophus::SE3d &sensor_pose);
 
-    void visualization_thread_func();
-
-    void visualize_aligned_point_clouds(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, Sophus::SE3d &pose,
-                                        const size_t h_res, const size_t v_res, const double view_height);
-
     // Sophus::SE3d predict_sensor_motion();
 
     double z_height_threshold_;
@@ -112,9 +113,9 @@ class Mapper3D {
     std::vector<Eigen::Vector3f> prev_point_cloud_vec_;
     std::vector<Eigen::Vector3f> point_cloud_vec_;
 
-    Sophus::SE3d prev_sensor_pose_;
-    Sophus::SE3d sensor_pose_;
-    Sophus::SE3d corrected_sensor_pose_;
+    Sophus::SE3d prev_sensor_pose_odom_frame_;
+    Sophus::SE3d sensor_pose_odom_frame_;
+    Sophus::SE3d sensor_pose_map_frame_;
 
     Eigen::Matrix<double, 6, 6> odometry_covariance_;
 
@@ -130,17 +131,6 @@ class Mapper3D {
     GraphOptimizer graph_optimizer_;
 
     size_t pose_id_;
-
-    pcl::visualization::PCLVisualizer::Ptr viewer_;
-    bool viewer_initialized_;
-
-    std::thread viz_thread_;
-    std::mutex viz_mutex_;
-    std::condition_variable viz_cv_;
-    bool run_viz_thread_;
-    std::queue<std::shared_ptr<PointCloudFrame>> viz_queue_;
-    std::deque<std::string> point_cloud_ids_;
-    size_t point_cloud_counter_;
 };
 
 }  // namespace mapper3d

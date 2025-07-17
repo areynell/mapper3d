@@ -14,7 +14,7 @@
 #include <sophus/se3.hpp>
 #include <unordered_map>
 
-#include "mapper3d/timer.h"
+#include "mapper3d/logging.h"
 #include "mapper3d/utils.h"
 
 namespace mapper3d {
@@ -76,7 +76,7 @@ struct Submap {
 
     void add_point_cloud(const size_t id, const Sophus::SE3d &sensor_pose,
                          const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) {
-        Timer timer("Submap::add_point_cloud");
+        Timer timer(__func__, LogLevel::Debug);
 
         // if (!is_initialized) {
         if (num_frames == 0) {
@@ -104,7 +104,7 @@ struct Submap {
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr downsample_point_cloud(pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
                                                                const float voxel_size) {
-        Timer timer("Submap::downsample_point_cloud");
+        Timer timer(__func__, LogLevel::Debug);
 
         pcl::VoxelGrid<pcl::PointXYZ> voxel_grid;
         voxel_grid.setLeafSize(voxel_size, voxel_size, voxel_size);
@@ -117,7 +117,7 @@ struct Submap {
     }
 
     void finalize_submap() {
-        Timer timer("Submap::finalize_submap");
+        Timer timer(__func__, LogLevel::Debug);
 
         downsampled_point_cloud = downsample_point_cloud(accumulated_point_cloud, voxel_size);
         downsampled_point_cloud_vec = utils::point_cloud_to_vec(downsampled_point_cloud);

@@ -9,11 +9,9 @@ set(CMAKE_CXX_STANDARD 17)
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 # set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fsanitize=address")
 
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O2")
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native -mtune=native")
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
-# set(CMAKE_CXX_FLAGS "-g -O2")
-# set(CMAKE_CXX_FLAGS "-O0 -g3 -ggdb")
+# set(CMAKE_CXX_FLAGS "-O0 -g -ggdb")
 
 # # Multiple build types for different use cases
 # if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -171,6 +169,12 @@ install(TARGETS
   kitti_to_ros2_bag
   EXPORT export_mapper3d
   DESTINATION lib/${PROJECT_NAME}
+)
+
+# Install launch files
+install(
+  DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}
 )
 
 ament_package()

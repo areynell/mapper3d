@@ -22,13 +22,12 @@ struct VisualizationData {
     pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud;
     std::vector<Eigen::Vector3f> kiss_matcher_point_cloud;
     std::vector<Eigen::Vector3f> kiss_matcher_keypoint_cloud;
-    Sophus::SE3d sensor_pose;
     rclcpp::Time timestamp;
 };
 
 struct Mapper3DNodeParams {
     int sub_queue_size = 100;
-    int pub_queue_size = 100;
+    int pub_queue_size = 1;
 
     std::string map_frame_id = "map";
     std::string odom_frame_id = "odom";
@@ -49,6 +48,7 @@ struct Mapper3DNodeParams {
 class Mapper3DNode : public rclcpp::Node {
    public:
     Mapper3DNode(const Mapper3DNodeParams &params);
+    ~Mapper3DNode();
 
    private:
     void pointcloud_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);

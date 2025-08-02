@@ -47,11 +47,18 @@ Mapper3DNode::Mapper3DNode(const Mapper3DNodeParams &params)
 
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(this);
 
+    visualization_wait_timeout_ = std::chrono::duration<double>(10.0);  // 10 seconds
     viz_thread_ = std::thread(&Mapper3DNode::visualization_thread_func, this);
 
-    visualization_wait_timeout_ = std::chrono::duration<double>(10.0);  // 10 seconds
-
     RCLCPP_INFO(this->get_logger(), "Mapper3DNode initialized.");
+}
+
+Mapper3DNode::~Mapper3DNode() {
+    run_viz_thread_ = false;
+    viz_cv_.notify_all();
+    if (viz_thread_.joinable()) {
+        viz_thread_.join();
+    }
 }
 
 void Mapper3DNode::pointcloud_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
@@ -93,7 +100,6 @@ void Mapper3DNode::enqueue_visualization_data(const rclcpp::Time &timestamp) {
     viz_data->point_cloud = mapper3d_.point_cloud();
     viz_data->kiss_matcher_point_cloud = mapper3d_.kiss_matcher_point_cloud();
     viz_data->kiss_matcher_keypoint_cloud = mapper3d_.kiss_matcher_keypoint_cloud();
-    viz_data->sensor_pose = mapper3d_.sensor_pose_odom_frame();
     viz_data->timestamp = timestamp;
 
     // Add visualization data to queue with lock
@@ -159,7 +165,7 @@ void Mapper3DNode::visualization_thread_func() {
         }
         publish_pose_trajectory();
         publish_loop_closures();
-        // publish_map();
+        publish_map();
     }
 }
 
@@ -286,8 +292,16 @@ void Mapper3DNode::publish_map() {
     if (map_pub_->get_subscription_count() > 0) {
         const auto map = mapper3d_.get_map();
 
+        // Downsample the map to reduce size
+        pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_map(new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::VoxelGrid<pcl::PointXYZ> voxel_grid;
+        const float voxel_size = 1.0F;  // TODO: Make configurable
+        voxel_grid.setInputCloud(map.makeShared());
+        voxel_grid.setLeafSize(voxel_size, voxel_size, voxel_size);
+        voxel_grid.filter(*downsampled_map);
+
         sensor_msgs::msg::PointCloud2 map_msg;
-        pcl::toROSMsg(map, map_msg);
+        pcl::toROSMsg(*downsampled_map, map_msg);
         map_msg.header.frame_id = map_frame_id_;
         map_msg.header.stamp = this->now();
 

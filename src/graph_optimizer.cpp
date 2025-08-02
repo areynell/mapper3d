@@ -22,9 +22,10 @@ GraphOptimizer::GraphOptimizer(const GraphOptimizerParams& params)
     gnc_params_ = gtsam::GncParams<gtsam::LevenbergMarquardtParams>(lm_params_);
     // gnc_params_.setLossType(params.loss_type);
 
-    // TLS seems to struggle sometimes (e.g. Kitti 19 sequence), so using GM for now
-    // gnc_params_.setLossType(gtsam::GncLossType::TLS);
-    gnc_params_.setLossType(gtsam::GncLossType::GM);
+    // GNC TLS struggles on Kitti 19 sequence, where "standard" g2o GM does not. Why?
+    // GNC GM struggles on Kitti 13 sequence, where "standard" g2o GM does not. Why?
+    gnc_params_.setLossType(gtsam::GncLossType::TLS);
+    // gnc_params_.setLossType(gtsam::GncLossType::GM);
     gnc_params_.setVerbosityGNC(gtsam::GncParams<gtsam::LevenbergMarquardtParams>::Verbosity::MU);
 
     current_pose_index_ = 0;
@@ -114,6 +115,15 @@ void GraphOptimizer::process_frames() {
             }
 
             {
+                // Incremental map updating
+                std::scoped_lock<std::mutex> lock(map_mutex_);
+
+                const auto sensor_pose_odom_frame = frame.pose;
+                const auto sensor_pose_map_frame = map_to_odom_transform_ * sensor_pose_odom_frame;
+                update_point_cloud_map(frame.point_cloud, sensor_pose_map_frame);
+            }
+
+            {
                 std::scoped_lock<std::mutex> lock(processed_frames_mutex_);
                 processed_frames_.emplace_back(frame);
             }
@@ -137,19 +147,6 @@ void GraphOptimizer::process_frames() {
                  (time_since_latest_frame_received > optimization_trigger_interval_)) {
             optimize();
         }
-
-        // // Incremental map updating
-        // if (new_frame_available) {
-        //     Logger::debug("Number of points in frame.point_cloud: " + std::to_string(frame.point_cloud.size()));
-
-        //     Logger::debug("Updating map...");
-        //     {
-        //         std::scoped_lock<std::mutex> lock(map_mutex_);
-        //         update_vdb_map(utils::point_vec_to_cloud(frame.point_cloud),
-        //                        frame.pose);  // Need to use updated poses from graph optimization
-        //     }
-        //     Logger::debug("Map updated.");
-        // }
     }
 }
 
@@ -303,7 +300,7 @@ void GraphOptimizer::generate_optimized_vdb_map() {
     map_vdb_->clear();
 
     for (const auto& frame : processed_frames_) {
-        update_vdb_map(utils::point_vec_to_cloud(frame.point_cloud), frame.pose);
+        update_vdb_map(frame.point_cloud, frame.pose);
     }
 
     Logger::info_important("Optimized map generated.");
@@ -342,8 +339,9 @@ void GraphOptimizer::generate_optimized_point_cloud_map() {
     std::scoped_lock<std::mutex, std::mutex> lock(map_mutex_, processed_frames_mutex_);
     map_pcd_->clear();
 
+    // TODO: Generate point cloud map using full resolution point clouds
     for (const auto& frame : processed_frames_) {
-        update_point_cloud_map(utils::point_vec_to_cloud(frame.point_cloud), frame.pose);
+        update_point_cloud_map(frame.point_cloud, frame.pose);
     }
 
     Logger::info_important("Optimized point cloud map generated.");

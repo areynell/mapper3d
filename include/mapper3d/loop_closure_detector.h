@@ -1,6 +1,9 @@
 #include <kiss_matcher/FasterPFH.hpp>
 #include <kiss_matcher/KISSMatcher.hpp>
 #include <optional>
+#include <small_gicp/pcl/pcl_point.hpp>
+#include <small_gicp/pcl/pcl_point_traits.hpp>
+#include <small_gicp/pcl/pcl_registration.hpp>
 #include <sophus/se3.hpp>
 #include <unordered_map>
 
@@ -48,6 +51,10 @@ class LoopClosureDetector {
     std::optional<LoopClosure> detect_loop_closures(const Frame& frame);
 
    private:
+    Sophus::SE3d local_registration(const pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud,
+                                    const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
+                                    const Sophus::SE3d& initial_transform_guess);
+
     void update_submaps(const Frame& frame);
 
     void visualize_point_cloud_alignment(const Submap& prev_submap, const Frame& frame,
@@ -56,8 +63,9 @@ class LoopClosureDetector {
 
     Eigen::Matrix<double, 6, 6> loop_closure_covariance_;
 
-    kiss_matcher::KISSMatcherConfig kiss_config_;
-    kiss_matcher::KISSMatcher kiss_matcher_;
+    kiss_matcher::KISSMatcherConfig global_registration_config_;
+    kiss_matcher::KISSMatcher global_registration_;
+    small_gicp::RegistrationPCL<pcl::PointXYZ, pcl::PointXYZ> local_registration_;
 
     Submap current_submap_;  // Current submap being built
     std::unordered_map<size_t, Submap> submaps_;

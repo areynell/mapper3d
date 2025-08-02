@@ -14,11 +14,6 @@ namespace utils {
 std::vector<Eigen::Vector3f> point_cloud_to_vec(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud);
 pcl::PointCloud<pcl::PointXYZ>::Ptr point_vec_to_cloud(const std::vector<Eigen::Vector3f>& point_vec);
 
-// TODO: Let's maybe move this to a "lidar odometry" class
-Sophus::SE3d small_gicp_registration(const std::vector<Eigen::Vector3f>& target_points,
-                                     const std::vector<Eigen::Vector3f>& source_points,
-                                     const Sophus::SE3d& initial_transform_guess);
-
 Sophus::SE3d eigen_to_sophus(const Eigen::Matrix4d& eigen_matrix);
 
 Sophus::SE3d constrain_pose_to_se2(const Sophus::SE3d& pose);

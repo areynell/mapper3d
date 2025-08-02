@@ -24,12 +24,13 @@ namespace mapper3d {
 struct Frame {
     size_t id;
     Sophus::SE3d pose;
-    std::vector<Eigen::Vector3f> point_cloud;
+    // TODO: Include both downsampled and "full resolution" point clouds
+    pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud;
     Eigen::Matrix<double, 6, 6> odometry_covariance;
 
     Frame() {}
 
-    Frame(size_t id, const Sophus::SE3d &pose, const std::vector<Eigen::Vector3f> &point_cloud,
+    Frame(size_t id, const Sophus::SE3d &pose, const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
           const Eigen::Matrix<double, 6, 6> &odometry_covariance)
         : id(id), pose(pose), point_cloud(point_cloud), odometry_covariance(odometry_covariance) {}
 };

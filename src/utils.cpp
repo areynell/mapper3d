@@ -42,76 +42,36 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr point_vec_to_cloud(const std::vector<Eigen::
     return point_cloud;
 }
 
-Sophus::SE3d small_gicp_registration(const std::vector<Eigen::Vector3f>& target_points,
-                                     const std::vector<Eigen::Vector3f>& source_points,
-                                     const Sophus::SE3d& initial_transform_guess) {
+Sophus::SE3d eigen_to_sophus(const Eigen::Matrix4d& eigen_matrix) {
     Timer timer(__func__, LogLevel::Debug);
 
-    // const Eigen::Isometry3d init_guess(initial_transform_guess.matrix());
+    // Sophus requires a valid rotation matrix in SO(3):
+    // 1) The rotation matrix must be orthogonal (R * R^T = I)
+    // 2) The rotation matrix determinant must be 1
 
-    small_gicp::RegistrationSetting setting;
-    // small_gicp::RegistrationResult result = small_gicp::align(target_points, source_points, init_guess, setting);
-    small_gicp::RegistrationResult result =
-        small_gicp::align(target_points, source_points, Eigen::Isometry3d(initial_transform_guess.matrix()), setting);
+    const Eigen::Matrix3d rotation = eigen_matrix.block<3, 3>(0, 0);
 
-    Logger::debug("Small GICP num inliers: " + std::to_string(result.num_inliers));
-    Logger::debug("Small GICP error: " + std::to_string(result.error));
-    Logger::debug("Small GICP converged: " + std::to_string(result.converged));
+    // Ensure that rotation is orthogonal using SVD
+    const Eigen::JacobiSVD<Eigen::Matrix3d> svd(rotation, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::Matrix3d orthogonal_rotation = svd.matrixU() * svd.matrixV().transpose();
 
-    return eigen_to_sophus(result.T_target_source.matrix());
-}
+    // Ensure that determinant is +1 (if not, we have a reflection, so need to flip the last column)
+    if (orthogonal_rotation.determinant() < 0) {
+        Logger::warn("Rotation matrix determinant is negative, flipping the last column to ensure a valid rotation.");
 
-// Sophus::SE3d eigen_to_sophus(const Eigen::Matrix4d& eigen_matrix) {
-//     // Sophus requires a valid rotation matrix in SO(3):
-//     // 1) The matrix must be orthogonal (R * R^T = I)
-//     // 2) The determinant must be 1
-
-//     // Extract rotation matrix
-//     Eigen::Matrix3d rotation = eigen_matrix.block<3, 3>(0, 0);
-
-//     // Ensure rotation is orthogonal using SVD
-//     Eigen::JacobiSVD<Eigen::Matrix3d> svd(rotation, Eigen::ComputeFullU | Eigen::ComputeFullV);
-//     Eigen::Matrix3d orthogonal_rotation = svd.matrixU() * svd.matrixV().transpose();
-
-//     // Ensure determinant is 1
-//     if (orthogonal_rotation.determinant() < 0) {
-//         Eigen::Matrix3d correction;
-//         correction << 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.0;
-//         orthogonal_rotation = orthogonal_rotation * correction;
-//     }
-
-//     // Extract translation
-//     Eigen::Vector3d translation = eigen_matrix.block<3, 1>(0, 3);
-
-//     return Sophus::SE3d(orthogonal_rotation, translation);
-// }
-
-Sophus::SE3d eigen_to_sophus(const Eigen::Matrix4d& eigen_matrix) {
-    // Extract rotation matrix
-    Eigen::Matrix3d rotation = eigen_matrix.block<3, 3>(0, 0);
-
-    // Check if the rotation matrix is already close to orthogonal
-    double orthogonality_error = (rotation * rotation.transpose() - Eigen::Matrix3d::Identity()).norm();
-
-    if (orthogonality_error > 1.0e-6) {
-        // Use SVD to find the closest orthogonal matrix
-        Eigen::JacobiSVD<Eigen::Matrix3d> svd(rotation, Eigen::ComputeFullU | Eigen::ComputeFullV);
-        rotation = svd.matrixU() * svd.matrixV().transpose();
-
-        // If determinant is negative, we have a reflection - fix by negating the last column of V
-        if (rotation.determinant() < 0) {
-            Eigen::Matrix3d V = svd.matrixV();
-            V.col(2) *= -1.0;  // Flip the last column
-            rotation = svd.matrixU() * V.transpose();
-        }
+        Eigen::Matrix3d V = svd.matrixV();
+        V.col(2) *= -1.0;  // Flip the last column
+        orthogonal_rotation = svd.matrixU() * V.transpose();
     }
 
-    Eigen::Vector3d translation = eigen_matrix.block<3, 1>(0, 3);
+    const Eigen::Vector3d translation = eigen_matrix.block<3, 1>(0, 3);
 
-    return Sophus::SE3d(rotation, translation);
+    return Sophus::SE3d(orthogonal_rotation, translation);
 }
 
 Sophus::SE3d constrain_pose_to_se2(const Sophus::SE3d& pose) {
+    Timer timer(__func__, LogLevel::Debug);
+
     Eigen::Vector3d translation = pose.translation();
     translation.z() = 0.0;
 

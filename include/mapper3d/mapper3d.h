@@ -8,11 +8,9 @@
 #include <pcl/registration/gicp.h>
 #include <pcl/visualization/pcl_visualizer.h>
 
-#include <condition_variable>
 #include <deque>
 #include <kiss_matcher/FasterPFH.hpp>
 #include <kiss_matcher/KISSMatcher.hpp>
-#include <queue>
 #include <small_gicp/pcl/pcl_point.hpp>
 #include <small_gicp/pcl/pcl_point_traits.hpp>
 #include <small_gicp/pcl/pcl_registration.hpp>
@@ -23,19 +21,23 @@
 
 namespace mapper3d {
 
-struct GICPParams {
-    double voxel_size = 0.5;                   // Voxel resolution for downsampling (m)
+struct GlobalRegistrationParams {
+    // TODO
+};
+
+struct LocalRegistrationParams {
+    // double voxel_size = 0.5;                   // Voxel resolution for downsampling (m)
     int num_threads = 8;                       // Number of threads for GICP
     int num_neighbors_for_covariance = 20;     // Number of neighbors for covariance estimation
     double max_correspondence_distance = 1.0;  // Maximum correspondence distance (m)
     std::string registration_type = "VGICP";   // Registration type: "VGICP" or "GICP"
+    // TODO: Register against the last N frames instead of the last frame
 };
 
 struct Mapper3DParams {
     // IMPORTANT: This should be the same as the voxel size used in Mapper3D and LoopClosureDetector
-    double voxel_size = 0.5;  // Voxel size for downsampling (m)
-    // double normal_radius = 3.0 * voxel_size;
-    // double fpfh_radius = 5.0 * voxel_size;
+    double voxel_size = 0.5;  // Voxel resolution for downsampling (m)
+
     double z_height_threshold = -1.0;  // Z height threshold for filtering (m)
     double min_sensor_distance = 3.0;  // Distance threshold for filtering points near the sensor (m)
 
@@ -46,13 +48,8 @@ struct Mapper3DParams {
     double pitch_odom_uncertainty = utils::deg2rad(1.0);  // Pitch orientation uncertainty for lidar odometry (rad)
     double yaw_odom_uncertainty = utils::deg2rad(1.0);    // Yaw orientation uncertainty for lidar odometry (rad)
 
-    GICPParams gicp_params;
+    LocalRegistrationParams local_reg_params;
     GraphOptimizerParams graph_optimizer_params;
-};
-
-struct PointCloudFrame {
-    pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud;
-    Sophus::SE3d sensor_pose;
 };
 
 class Mapper3D {
@@ -67,7 +64,7 @@ class Mapper3D {
 
     const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud() const;
 
-    const std::vector<Eigen::Vector3f> &point_cloud_vec() const;
+    // const std::vector<Eigen::Vector3f> &point_cloud_vec() const;
 
     const std::vector<Eigen::Vector3f> &kiss_matcher_point_cloud() const;
 
@@ -84,9 +81,13 @@ class Mapper3D {
     pcl::PointCloud<pcl::PointXYZ> get_map();
 
    private:
-    Sophus::SE3d estimate_lidar_odometry(const std::vector<Eigen::Vector3f> &prev_point_cloud,
-                                         const std::vector<Eigen::Vector3f> &point_cloud,
+    Sophus::SE3d estimate_lidar_odometry(const pcl::PointCloud<pcl::PointXYZ>::Ptr &prev_point_cloud,
+                                         const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
                                          const Sophus::SE3d &prev_sensor_pose);
+
+    Sophus::SE3d local_registration(const pcl::PointCloud<pcl::PointXYZ>::Ptr &prev_point_cloud,
+                                    const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
+                                    const Sophus::SE3d &initial_transform_guess);
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr filter_point_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud);
 
@@ -105,13 +106,14 @@ class Mapper3D {
     double min_sensor_distance_;
     pcl::VoxelGrid<pcl::PointXYZ> voxel_grid_;
 
-    kiss_matcher::KISSMatcherConfig kiss_config_;
-    kiss_matcher::KISSMatcher kiss_matcher_;
+    kiss_matcher::KISSMatcherConfig global_registration_config_;
+    kiss_matcher::KISSMatcher global_registration_;
+    small_gicp::RegistrationPCL<pcl::PointXYZ, pcl::PointXYZ> local_registration_;
+
     bool constrain_pose_to_se2_;
 
+    pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud_;
     pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud_;
-    std::vector<Eigen::Vector3f> prev_point_cloud_vec_;
-    std::vector<Eigen::Vector3f> point_cloud_vec_;
 
     Sophus::SE3d prev_sensor_pose_odom_frame_;
     Sophus::SE3d sensor_pose_odom_frame_;
@@ -124,9 +126,6 @@ class Mapper3D {
 
     std::vector<Eigen::Vector3f> kiss_matcher_prev_keypoints_;
     std::vector<Eigen::Vector3f> kiss_matcher_keypoints_;
-
-    std::deque<PointCloudFrame> aligned_point_cloud_frames_;
-    size_t max_point_cloud_history_;
 
     GraphOptimizer graph_optimizer_;
 

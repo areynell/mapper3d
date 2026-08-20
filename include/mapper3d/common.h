@@ -19,20 +19,34 @@
 
 namespace mapper3d {
 
-// constexpr double kDefaultVoxelSize = 0.25;  // Default voxel size for downsampling (m)
+struct VisualizationData {
+    std::vector<Sophus::SE3d> poses;
+    std::vector<std::pair<size_t, size_t>> loop_closure_edges;
+    pcl::PointCloud<pcl::PointXYZ>::ConstPtr map;
+};
 
 struct Frame {
     size_t id;
     Sophus::SE3d pose;
-    // TODO: Include both downsampled and "full resolution" point clouds
-    pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud;  // Full resolution point cloud
+    pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_point_cloud;
     Eigen::Matrix<double, 6, 6> odometry_covariance;
 
-    Frame() {}
+    Frame()
+        : id(0),
+          pose(Sophus::SE3d()),
+          point_cloud(new pcl::PointCloud<pcl::PointXYZ>()),
+          downsampled_point_cloud(new pcl::PointCloud<pcl::PointXYZ>()),
+          odometry_covariance(Eigen::Matrix<double, 6, 6>::Zero()) {}
 
     Frame(size_t id, const Sophus::SE3d &pose, const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
+          const pcl::PointCloud<pcl::PointXYZ>::Ptr &downsampled_point_cloud,
           const Eigen::Matrix<double, 6, 6> &odometry_covariance)
-        : id(id), pose(pose), point_cloud(point_cloud), odometry_covariance(odometry_covariance) {}
+        : id(id),
+          pose(pose),
+          point_cloud(point_cloud),
+          downsampled_point_cloud(downsampled_point_cloud),
+          odometry_covariance(odometry_covariance) {}
 };
 
 struct Submap {

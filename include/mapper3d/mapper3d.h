@@ -41,6 +41,10 @@ struct Mapper3DParams {
     double z_height_threshold = -1.0;  // Z height threshold for filtering (m)
     double min_sensor_distance = 3.0;  // Distance threshold for filtering points near the sensor (m)
 
+    // Keyframe selection: Only a frame that has moved far enough from the previous keyframe becomes a node.
+    double keyframe_distance_threshold = 1.0;                   // Min translation between keyframes (m)
+    double keyframe_rotation_threshold = utils::deg2rad(10.0);  // Min rotation between keyframes (rad)
+
     double x_odom_uncertainty = 0.02;                     // X position uncertainty for lidar odometry (m)
     double y_odom_uncertainty = 0.02;                     // Y position uncertainty for lidar odometry (m)
     double z_odom_uncertainty = 0.02;                     // Z position uncertainty for lidar odometry (m)
@@ -62,28 +66,34 @@ class Mapper3D {
     Sophus::SE3d sensor_pose_odom_frame() const;
     Sophus::SE3d sensor_pose_map_frame() const;
 
-    const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud() const;
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_point_cloud() const;
 
     // const std::vector<Eigen::Vector3f> &point_cloud_vec() const;
 
-    const std::vector<Eigen::Vector3f> &kiss_matcher_point_cloud() const;
+    const std::vector<Eigen::Vector3f> &global_registration_point_cloud() const;
 
-    const std::vector<Eigen::Vector3f> &kiss_matcher_keypoint_cloud() const;
+    const std::vector<Eigen::Vector3f> &global_registration_keypoints() const;
 
     gtsam::Values get_unoptimized_poses();
 
     gtsam::Values get_optimized_poses();
 
-    gtsam::Values get_online_poses();
+    // std::vector<Sophus::SE3d> get_online_poses();
+
+    // std::vector<std::pair<size_t, size_t>> get_loop_closure_edges();
 
     gtsam::NonlinearFactorGraph get_graph();
 
-    pcl::PointCloud<pcl::PointXYZ> get_map();
+    pcl::PointCloud<pcl::PointXYZ>::ConstPtr get_map();
+
+    void get_graph_visualization_data(VisualizationData &data);
 
    private:
     Sophus::SE3d estimate_lidar_odometry(const pcl::PointCloud<pcl::PointXYZ>::Ptr &prev_point_cloud,
                                          const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
                                          const Sophus::SE3d &prev_sensor_pose);
+
+    bool should_add_keyframe(const Sophus::SE3d &sensor_pose) const;
 
     Sophus::SE3d local_registration(const pcl::PointCloud<pcl::PointXYZ>::Ptr &prev_point_cloud,
                                     const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
@@ -112,20 +122,24 @@ class Mapper3D {
 
     bool constrain_pose_to_se2_;
 
-    pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud_;
-    pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud_;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr prev_downsampled_point_cloud_;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_point_cloud_;
 
     Sophus::SE3d prev_sensor_pose_odom_frame_;
     Sophus::SE3d sensor_pose_odom_frame_;
     Sophus::SE3d sensor_pose_map_frame_;
 
+    double keyframe_distance_threshold_;
+    double keyframe_rotation_threshold_;
+    Sophus::SE3d latest_keyframe_pose_odom_frame_;
+
     Eigen::Matrix<double, 6, 6> odometry_covariance_;
 
-    std::vector<Eigen::Vector3f> kiss_matcher_processed_prev_point_cloud_;
-    std::vector<Eigen::Vector3f> kiss_matcher_processed_point_cloud_;
+    std::vector<Eigen::Vector3f> global_registration_processed_prev_point_cloud_;
+    std::vector<Eigen::Vector3f> global_registration_processed_point_cloud_;
 
-    std::vector<Eigen::Vector3f> kiss_matcher_prev_keypoints_;
-    std::vector<Eigen::Vector3f> kiss_matcher_keypoints_;
+    std::vector<Eigen::Vector3f> global_registration_prev_keypoints_;
+    std::vector<Eigen::Vector3f> global_registration_keypoints_;
 
     GraphOptimizer graph_optimizer_;
 

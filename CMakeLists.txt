@@ -11,6 +11,7 @@ set(CMAKE_CXX_STANDARD 17)
 
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native -mtune=native")
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+# set(CMAKE_CXX_FLAGS "-O0 -g -ggdb -fsanitize=address")
 # set(CMAKE_CXX_FLAGS "-O0 -g -ggdb")
 
 # # Multiple build types for different use cases

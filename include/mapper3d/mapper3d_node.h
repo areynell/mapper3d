@@ -18,13 +18,6 @@
 
 #include "mapper3d/mapper3d.h"
 
-struct VisualizationData {
-    pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud;
-    std::vector<Eigen::Vector3f> kiss_matcher_point_cloud;
-    std::vector<Eigen::Vector3f> kiss_matcher_keypoint_cloud;
-    rclcpp::Time timestamp;
-};
-
 struct Mapper3DNodeParams {
     int sub_queue_size = 100;
     int pub_queue_size = 1;
@@ -56,17 +49,22 @@ class Mapper3DNode : public rclcpp::Node {
     void publish_point_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const std::string &frame_id,
                              const rclcpp::Time &timestamp);
 
-    void publish_keypoint_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const std::string &frame_id,
-                                const rclcpp::Time &timestamp);
+    void publish_keypoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const std::string &frame_id,
+                           const rclcpp::Time &timestamp);
 
-    void publish_pose_trajectory();
-    void publish_loop_closures();
-    void publish_map();
+    void publish_pose_trajectory(const std::vector<Sophus::SE3d> &poses, const rclcpp::Time &timestamp);
+
+    void publish_loop_closures(const std::vector<Sophus::SE3d> &poses,
+                               const std::vector<std::pair<size_t, size_t>> &loop_closure_edges,
+                               const rclcpp::Time &timestamp);
+
+    void publish_map(const pcl::PointCloud<pcl::PointXYZ>::ConstPtr &map, const rclcpp::Time &timestamp);
 
     void broadcast_transform(const Sophus::SE3d &transform, const std::string &frame_id,
                              const std::string &child_frame_id, const rclcpp::Time &timestamp);
 
     void enqueue_visualization_data(const rclcpp::Time &timestamp);
+    void notify_visualization_thread();
 
     void visualization_thread_func();
 
@@ -86,15 +84,14 @@ class Mapper3DNode : public rclcpp::Node {
 
     mapper3d::Mapper3D mapper3d_;
 
-    std::thread viz_thread_;
-    std::mutex viz_mutex_;
-    std::condition_variable viz_cv_;
-    size_t max_viz_queue_size_;  // Prevent unlimited backlog
-    bool run_viz_thread_;
-    std::queue<std::shared_ptr<VisualizationData>> viz_queue_;
+    bool run_visualization_thread_;
+    std::thread visualization_thread_;
+    std::mutex visualization_mutex_;
+    std::condition_variable visualization_cv_;
     std::chrono::duration<double> visualization_wait_timeout_;
+    bool new_data_available_;
 
-    Sophus::SE3d map_to_sensor_transform_;
+    // Sophus::SE3d map_to_sensor_transform_;
 
     rclcpp::Time prev_timestamp_;
 };

@@ -3,6 +3,7 @@
 #include <gtsam/nonlinear/GncOptimizer.h>
 #include <gtsam/nonlinear/GncParams.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
+#include <gtsam/nonlinear/Marginals.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/dataset.h>
 #include <pcl/io/ply_io.h>
@@ -10,7 +11,6 @@
 #include <mutex>
 
 #include "mapper3d/logging.h"
-#include "mapper3d/utils.h"
 
 namespace mapper3d {
 
@@ -44,18 +44,12 @@ GraphOptimizer::GraphOptimizer(const GraphOptimizerParams& params)
 
     map_to_odom_transform_ = Sophus::SE3d();
 
-    // Initialize point cloud map
-    map_pcd_ = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
-    map_pcd_->is_dense = false;  // Allow for NaN values in the point cloud
-    map_pcd_->height = 1;        // Set height to 1 for an unorganized point cloud
-    map_pcd_->width = 0;         // Initialize width
-
     // Initialize OpenVDB for volumetric map representation
     openvdb::initialize();
-    map_voxel_size_ = 0.05F;  // Adjust voxel size as needed
-    map_vdb_ = openvdb::FloatGrid::create();
+    map_voxel_size_ = params.map_voxel_size;
+    map_vdb_ = openvdb::BoolGrid::create();
     map_vdb_->setTransform(openvdb::math::Transform::createLinearTransform(map_voxel_size_));
-    map_vdb_->setGridClass(openvdb::GRID_LEVEL_SET);
+    map_changed_ = false;
 
     // Start processing frames in a separate thread
     frame_processing_thread_ = std::thread(&GraphOptimizer::process_frames, this);
@@ -120,7 +114,7 @@ void GraphOptimizer::process_frames() {
 
                 const auto sensor_pose_odom_frame = frame.pose;
                 const auto sensor_pose_map_frame = map_to_odom_transform_ * sensor_pose_odom_frame;
-                update_point_cloud_map(frame.point_cloud, sensor_pose_map_frame);
+                update_vdb_map(frame.downsampled_point_cloud, sensor_pose_map_frame);
             }
 
             {
@@ -177,20 +171,23 @@ void GraphOptimizer::add_odometry_constraint(const Sophus::SE3d& pose,
         const gtsam::Symbol prev_pose_symbol('x', current_pose_index_ - 1);
 
         // Relative pose between previous pose and current pose
-        const gtsam::Pose3 prev_pose = initial_estimates_.at<gtsam::Pose3>(prev_pose_symbol);
+        const gtsam::Pose3 prev_pose = unoptimized_estimates_.at<gtsam::Pose3>(prev_pose_symbol);
         const gtsam::Pose3 odometry_relative_pose = prev_pose.inverse() * current_pose;
 
         // Add odometry factor for subsequent poses
         graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(prev_pose_symbol, current_pose_symbol,
                                                                   odometry_relative_pose, odometry_noise_model);
     }
-    initial_estimates_.insert(current_pose_symbol, current_pose);
+    unoptimized_estimates_.insert(current_pose_symbol, current_pose);
 
     // TODO: Is there a better way to create a pose graph that can be visualized live in RViz as it is being built?
     const Sophus::SE3d online_pose_in_map_frame = map_to_odom_transform_ * pose;
     const gtsam::Pose3 online_pose(gtsam::Rot3(online_pose_in_map_frame.unit_quaternion()),
                                    gtsam::Point3(online_pose_in_map_frame.translation()));
     online_estimates_.insert(current_pose_symbol, online_pose);
+
+    // // Used for visualization
+    // online_poses_.emplace_back(online_pose_in_map_frame);
 
     current_pose_index_++;
 }
@@ -210,6 +207,9 @@ void GraphOptimizer::add_loop_closure_constraint(size_t prev_pose_id, size_t pos
     graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(prev_pose_symbol, current_pose_symbol,
                                                               loop_closure_relative_pose, loop_closure_noise_model);
 
+    // // Used for visualization
+    // loop_closure_edges_.emplace_back(prev_pose_id, pose_id);
+
     num_new_loop_closures_++;
     num_loop_closures_++;
 }
@@ -222,11 +222,14 @@ void GraphOptimizer::optimize() {
         Logger::info_important("Optimizing pose graph...");
 
         // gtsam::GncOptimizer<gtsam::GncParams<gtsam::LevenbergMarquardtParams>> optimizer(graph_, initial_estimates_);
-        gtsam::GncOptimizer<gtsam::GncParams<gtsam::LevenbergMarquardtParams>> optimizer(graph_, initial_estimates_,
+        gtsam::GncOptimizer<gtsam::GncParams<gtsam::LevenbergMarquardtParams>> optimizer(graph_, unoptimized_estimates_,
                                                                                          gnc_params_);
 
         optimized_estimates_ = optimizer.optimize();
         online_estimates_ = optimized_estimates_;
+
+        // online_poses_ = extract_online_poses();
+        // loop_closure_edges_ = extract_loop_closure_edges();
 
         Logger::info_important("Pose graph optimized.");
     }
@@ -235,18 +238,21 @@ void GraphOptimizer::optimize() {
     update_map_to_odom_transform();
 
     update_frame_poses();
-    // generate_optimized_vdb_map();
-    generate_optimized_point_cloud_map();
+    generate_optimized_vdb_map();
 
     num_new_loop_closures_ = 0;                                    // Reset the counter after optimization
     latest_optimization_time_ = std::chrono::steady_clock::now();  // Update the time of the latest optimization
 
     // Save the graph to a file
-    gtsam::writeG2o(graph_, initial_estimates_, "unoptimized_graph.g2o");
+    gtsam::writeG2o(graph_, unoptimized_estimates_, "unoptimized_graph.g2o");
     gtsam::writeG2o(graph_, optimized_estimates_, "optimized_graph.g2o");
 
-    // Save point cloud map to disk
-    pcl::io::savePLYFileBinary("map_pcd.ply", *map_pcd_);
+    // Save point cloud map to disk. This writes the voxelized snapshot, whose size is
+    // bounded by the volume explored.
+    {
+        std::scoped_lock<std::mutex> lock(map_mutex_);
+        pcl::io::savePLYFileBinary("map_pcd.ply", *rebuild_map_snapshot());
+    }
 
     // // Save VDB map to disk
     // openvdb::io::File vdb_file("map.vdb");
@@ -263,7 +269,7 @@ void GraphOptimizer::update_map_to_odom_transform() {
         std::scoped_lock<std::mutex> lock(graph_mutex_);
 
         const gtsam::Symbol latest_pose_symbol('x', current_pose_index_ - 1);
-        const gtsam::Pose3 latest_unoptimized_pose = initial_estimates_.at<gtsam::Pose3>(latest_pose_symbol);
+        const gtsam::Pose3 latest_unoptimized_pose = unoptimized_estimates_.at<gtsam::Pose3>(latest_pose_symbol);
         const gtsam::Pose3 latest_optimized_pose = optimized_estimates_.at<gtsam::Pose3>(latest_pose_symbol);
 
         const gtsam::Pose3 pose_difference = latest_optimized_pose * latest_unoptimized_pose.inverse();
@@ -300,8 +306,10 @@ void GraphOptimizer::generate_optimized_vdb_map() {
     map_vdb_->clear();
 
     for (const auto& frame : processed_frames_) {
-        update_vdb_map(frame.point_cloud, frame.pose);
+        update_vdb_map(frame.downsampled_point_cloud, frame.pose);
     }
+
+    map_changed_ = true;
 
     Logger::info_important("Optimized map generated.");
 }
@@ -314,6 +322,10 @@ void GraphOptimizer::update_vdb_map(const pcl::PointCloud<pcl::PointXYZ>::Ptr po
     // IMPORTANT: Need to make sure we're using the optimized poses from the graph optimization (i.e. sensor pose in map
     // frame, not sensor pose in odom frame)
 
+    // IMPORTANT: Create the accessor once, outside the loop. The accessor caches the
+    // tree traversal path between nearby lookups.
+    openvdb::BoolGrid::Accessor accessor = map_vdb_->getAccessor();
+
     for (const auto& point : point_cloud->points) {
         const Eigen::Vector3d point_in_sensor_frame(point.x, point.y, point.z);
         const Eigen::Vector3d point_in_map_frame = sensor_pose * point_in_sensor_frame;
@@ -324,54 +336,111 @@ void GraphOptimizer::update_vdb_map(const pcl::PointCloud<pcl::PointXYZ>::Ptr po
         // Convert the world-space point coordinate to an index-space coordinate.
         const openvdb::Coord voxel_coord = openvdb::Coord::floor(map_vdb_->worldToIndex(point_in_map_frame_vdb));
 
-        // Access the voxel and set its value (e.g., to 1.0f to indicate occupancy)
-        openvdb::FloatGrid::Accessor accessor = map_vdb_->getAccessor();
-        accessor.setValue(voxel_coord, 100.0f);
+        accessor.setValueOn(voxel_coord, true);
     }
+
+    map_changed_ = true;
 
     Logger::debug("VDB map updated.");
 }
 
-void GraphOptimizer::generate_optimized_point_cloud_map() {
-    Timer timer(__func__, LogLevel::InfoImportant);
-    Logger::info_important("Generating optimized point cloud map from optimized poses...");
-
-    std::scoped_lock<std::mutex, std::mutex> lock(map_mutex_, processed_frames_mutex_);
-    map_pcd_->clear();
-
-    // TODO: Generate point cloud map using full resolution point clouds
-    for (const auto& frame : processed_frames_) {
-        update_point_cloud_map(frame.point_cloud, frame.pose);
+pcl::PointCloud<pcl::PointXYZ>::ConstPtr GraphOptimizer::rebuild_map_snapshot() {
+    // IMPORTANT: The caller must hold map_mutex_.
+    if (!map_changed_ && map_snapshot_) {
+        return map_snapshot_;
     }
 
-    Logger::info_important("Optimized point cloud map generated.");
-}
-
-void GraphOptimizer::update_point_cloud_map(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
-                                            const Sophus::SE3d& sensor_pose) {
     Timer timer(__func__, LogLevel::Debug);
-    Logger::debug("Updating point cloud map...");
 
-    // IMPORTANT: Need to make sure we're using the optimized poses from the graph optimization (i.e. sensor pose in map
-    // frame, not sensor pose in odom frame)
+    // Rebuild the snapshot from the VDB grid.
+    auto map_snapshot = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
+    map_snapshot->reserve(static_cast<size_t>(map_vdb_->activeVoxelCount()));
 
-    // Transform the point cloud from sensor frame to map frame
-    pcl::PointCloud<pcl::PointXYZ> transformed_cloud;
-    pcl::transformPointCloud(*point_cloud, transformed_cloud, sensor_pose.matrix().cast<float>());
-    // Append the transformed cloud to the map point cloud
-    *map_pcd_ += transformed_cloud;
+    for (auto iter = map_vdb_->cbeginValueOn(); iter; ++iter) {
+        const openvdb::Vec3d point = map_vdb_->indexToWorld(iter.getCoord());
+        map_snapshot->emplace_back(static_cast<float>(point.x()), static_cast<float>(point.y()),
+                                   static_cast<float>(point.z()));
+    }
 
-    Logger::debug("Point cloud map updated.");
+    map_snapshot->width = map_snapshot->size();
+    map_snapshot->height = 1;  // Unorganized point cloud
+    map_snapshot->is_dense = false;
+
+    // Publish by pointer swap. Nothing writes to the snapshot after this point, so a
+    // reader that took the pointer under map_mutex_ can keep using it once it releases
+    // the mutex.
+    map_snapshot_ = map_snapshot;
+    map_changed_ = false;
+
+    return map_snapshot_;
 }
 
-pcl::PointCloud<pcl::PointXYZ> GraphOptimizer::get_map() {
+void GraphOptimizer::get_visualization_data(VisualizationData& data) {
+    {
+        std::scoped_lock<std::mutex> lock(graph_mutex_);
+
+        data.poses = extract_online_poses();
+        data.loop_closure_edges = extract_loop_closure_edges();
+    }
+
+    {
+        std::scoped_lock<std::mutex> lock(map_mutex_);
+
+        // TODO: Is there a more efficient way to publish the map for visualization?
+        // Hand over the snapshot pointer rather than a copy of the map. The snapshot is
+        // immutable once published, so the caller can keep it after the mutex is gone.
+        data.map = rebuild_map_snapshot();
+    }
+}
+
+std::vector<Sophus::SE3d> GraphOptimizer::extract_online_poses() {
+    // std::scoped_lock<std::mutex> lock(graph_mutex_);
+
+    std::vector<Sophus::SE3d> poses;
+    poses.reserve(online_estimates_.size());
+
+    for (const auto& key_value : online_estimates_) {
+        const gtsam::Key key = key_value.key;
+        if (!online_estimates_.exists<gtsam::Pose3>(key)) {
+            continue;
+        }
+        const gtsam::Pose3 pose = online_estimates_.at<gtsam::Pose3>(key);
+        poses.emplace_back(Sophus::SE3d(pose.rotation().toQuaternion(), pose.translation()));
+    }
+
+    return poses;
+}
+
+std::vector<std::pair<size_t, size_t>> GraphOptimizer::extract_loop_closure_edges() {
+    // std::scoped_lock<std::mutex> lock(graph_mutex_);
+
+    std::vector<std::pair<size_t, size_t>> edges;
+
+    for (const auto& factor : graph_) {
+        const auto between_factor = boost::dynamic_pointer_cast<gtsam::BetweenFactor<gtsam::Pose3>>(factor);
+        if (!between_factor) {
+            continue;
+        }
+        const auto key1 = gtsam::Symbol(between_factor->key1());
+        const auto key2 = gtsam::Symbol(between_factor->key2());
+        if (key1.chr() == 'x' && key2.chr() == 'x') {
+            // Heuristic: Loop closure edges are those where the indices are not consecutive
+            if (key2.index() > key1.index() + 1) {
+                edges.emplace_back(key1.index(), key2.index());
+            }
+        }
+    }
+    return edges;
+}
+
+pcl::PointCloud<pcl::PointXYZ>::ConstPtr GraphOptimizer::get_map() {
     std::scoped_lock<std::mutex> lock(map_mutex_);
-    return *map_pcd_;
+    return rebuild_map_snapshot();
 }
 
 gtsam::Values GraphOptimizer::get_unoptimized_poses() {
     std::scoped_lock<std::mutex> lock(graph_mutex_);
-    return initial_estimates_;
+    return unoptimized_estimates_;
 }
 
 gtsam::Values GraphOptimizer::get_optimized_poses() {
@@ -379,15 +448,43 @@ gtsam::Values GraphOptimizer::get_optimized_poses() {
     return optimized_estimates_;
 }
 
-gtsam::Values GraphOptimizer::get_online_poses() {
-    std::scoped_lock<std::mutex> lock(graph_mutex_);
-    return online_estimates_;
-}
+// std::vector<Sophus::SE3d> GraphOptimizer::get_online_poses() {
+//     std::scoped_lock<std::mutex> lock(graph_mutex_);
+//     return online_poses_;
+// }
+
+// std::vector<std::pair<size_t, size_t>> GraphOptimizer::get_loop_closure_edges() {
+//     std::scoped_lock<std::mutex> lock(graph_mutex_);
+//     return loop_closure_edges_;
+// }
 
 gtsam::NonlinearFactorGraph GraphOptimizer::get_graph() {
     std::scoped_lock<std::mutex> lock(graph_mutex_);
     return graph_;
 }
+
+// std::vector<Eigen::Matrix<double, 6, 6>> GraphOptimizer::get_pose_covariances() {
+//     std::scoped_lock<std::mutex> lock(graph_mutex_);
+
+//     std::vector<Eigen::Matrix<double, 6, 6>> covariances;
+//     covariances.reserve(optimized_estimates_.size());
+
+//     gtsam::Marginals marginals(graph_, optimized_estimates_);
+
+//     for (const auto& key_value : optimized_estimates_) {
+//         const gtsam::Key key = key_value.key;
+//         if (!optimized_estimates_.exists<gtsam::Pose3>(key)) {
+//             continue;
+//         }
+
+//         // Compute the marginal covariance for the pose
+//         const Eigen::Matrix<double, 6, 6> covariance = marginals.marginalCovariance(key);
+
+//         covariances.push_back(covariance);
+//     }
+
+//     return covariances;
+// }
 
 Sophus::SE3d GraphOptimizer::map_to_odom_transform() {
     std::scoped_lock<std::mutex> lock(map_to_odom_transform_mutex_);

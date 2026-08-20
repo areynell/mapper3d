@@ -9,8 +9,11 @@
 #include <mutex>
 #include <rclcpp/logging.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp/time.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <vector>
 
+#include "mapper3d/common.h"
 #include "mapper3d/logging.h"
 #include "mapper3d/utils.h"
 
@@ -21,9 +24,9 @@ Mapper3DNode::Mapper3DNode(const Mapper3DNodeParams &params)
       odom_frame_id_(params.odom_frame_id),
       base_frame_id_(params.base_frame_id),
       sensor_frame_id_(params.sensor_frame_id),
-      run_viz_thread_(true),
-      max_viz_queue_size_(5),
-      map_to_sensor_transform_(Sophus::SE3d()),
+      run_visualization_thread_(true),
+      new_data_available_(false),
+      //   map_to_sensor_transform_(Sophus::SE3d()),
       prev_timestamp_(rclcpp::Time(0, 0, RCL_ROS_TIME)) {
     RCLCPP_INFO(this->get_logger(), "Initializing Mapper3DNode...");
 
@@ -48,21 +51,21 @@ Mapper3DNode::Mapper3DNode(const Mapper3DNodeParams &params)
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(this);
 
     visualization_wait_timeout_ = std::chrono::duration<double>(10.0);  // 10 seconds
-    viz_thread_ = std::thread(&Mapper3DNode::visualization_thread_func, this);
+    visualization_thread_ = std::thread(&Mapper3DNode::visualization_thread_func, this);
 
     RCLCPP_INFO(this->get_logger(), "Mapper3DNode initialized.");
 }
 
 Mapper3DNode::~Mapper3DNode() {
-    run_viz_thread_ = false;
-    viz_cv_.notify_all();
-    if (viz_thread_.joinable()) {
-        viz_thread_.join();
+    run_visualization_thread_ = false;
+    visualization_cv_.notify_all();
+    if (visualization_thread_.joinable()) {
+        visualization_thread_.join();
     }
 }
 
 void Mapper3DNode::pointcloud_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-    Timer timer(__func__, LogLevel::Debug);
+    Timer timer(__func__, LogLevel::InfoImportant);
 
     const rclcpp::Time msg_time(msg->header.stamp, RCL_ROS_TIME);
     const double time_diff = (msg_time - prev_timestamp_).seconds();
@@ -87,31 +90,9 @@ void Mapper3DNode::pointcloud_callback(const sensor_msgs::msg::PointCloud2::Shar
     broadcast_transform(odom_to_sensor_transform, odom_frame_id_, sensor_frame_id_, msg->header.stamp);
     // broadcast_transform(map_to_sensor_transform_, map_frame_id_, sensor_frame_id_, msg->header.stamp);
 
-    enqueue_visualization_data(msg_time);
+    notify_visualization_thread();
 
-    Logger::info("--------------------------------------------------------------------------");
-}
-
-// TODO: Should we remove this function and just publish directly from the visualization thread?
-void Mapper3DNode::enqueue_visualization_data(const rclcpp::Time &timestamp) {
-    // TODO: Do we really need a visualization data struct?
-    // Instantiate visualization data struct
-    auto viz_data = std::make_shared<VisualizationData>();
-    viz_data->point_cloud = mapper3d_.point_cloud();
-    viz_data->kiss_matcher_point_cloud = mapper3d_.kiss_matcher_point_cloud();
-    viz_data->kiss_matcher_keypoint_cloud = mapper3d_.kiss_matcher_keypoint_cloud();
-    viz_data->timestamp = timestamp;
-
-    // Add visualization data to queue with lock
-    {
-        std::scoped_lock<std::mutex> lock(viz_mutex_);
-        // Prevent queue from growing too large if visualization can't keep up
-        while (viz_queue_.size() >= max_viz_queue_size_) {
-            viz_queue_.pop();
-        }
-        viz_queue_.push(viz_data);
-    }
-    viz_cv_.notify_one();
+    RCLCPP_INFO(this->get_logger(), "--------------------------------------------------------------------------");
 }
 
 void Mapper3DNode::broadcast_transform(const Sophus::SE3d &transform, const std::string &frame_id,
@@ -133,39 +114,42 @@ void Mapper3DNode::broadcast_transform(const Sophus::SE3d &transform, const std:
     tf_broadcaster_->sendTransform(tf_msg);
 }
 
+void Mapper3DNode::notify_visualization_thread() {
+    std::scoped_lock<std::mutex> lock(visualization_mutex_);
+    new_data_available_ = true;
+    visualization_cv_.notify_one();
+}
+
 void Mapper3DNode::visualization_thread_func() {
-    while (run_viz_thread_) {
-        std::shared_ptr<VisualizationData> viz_data;
-
+    while (run_visualization_thread_) {
         {
-            std::unique_lock<std::mutex> lock(viz_mutex_);
-            viz_cv_.wait_for(lock, visualization_wait_timeout_,
-                             [this]() { return !viz_queue_.empty() || !run_viz_thread_; });
+            std::unique_lock<std::mutex> lock(visualization_mutex_);
+            visualization_cv_.wait(lock, [this]() { return !run_visualization_thread_ || new_data_available_; });
 
-            if (!run_viz_thread_) {
+            if (!run_visualization_thread_) {
                 break;
             }
 
-            if (!viz_queue_.empty()) {
-                viz_data = viz_queue_.front();
-                viz_queue_.pop();
-            }
+            // Reset data flag after being woken up
+            new_data_available_ = false;
         }
 
-        // TODO: Should we remove this check?
-        if (viz_data) {
-            auto kiss_matcher_point_cloud = mapper3d::utils::point_vec_to_cloud(viz_data->kiss_matcher_point_cloud);
-            auto kiss_matcher_keypoints = mapper3d::utils::point_vec_to_cloud(viz_data->kiss_matcher_keypoint_cloud);
+        RCLCPP_INFO(this->get_logger(), "Processing visualization data...");
+        Timer timer(__func__, LogLevel::InfoImportant);
 
-            // publish_point_cloud(viz_data->point_cloud, sensor_frame_id_, viz_data->timestamp);
-            // Why does kiss_matcher_point_cloud "smear" during turns? Is there a timestamp issue? NOTE: it's not due to
-            // point cloud warping
-            // publish_point_cloud(kiss_matcher_point_cloud, sensor_frame_id_, viz_data->timestamp);
-            publish_keypoint_cloud(kiss_matcher_keypoints, sensor_frame_id_, viz_data->timestamp);
-        }
-        publish_pose_trajectory();
-        publish_loop_closures();
-        publish_map();
+        // Fetch a single, consistent snapshot of all data
+        mapper3d::VisualizationData graph_vis_data;
+        mapper3d_.get_graph_visualization_data(graph_vis_data);
+
+        // Why does global_registration_point_cloud "smear" during turns? Is there a timestamp issue?
+        // NOTE: it's not due to point cloud warping
+
+        // TODO: Use a more appropriate timestamp for visualization
+        const auto timestamp = this->now();
+
+        publish_pose_trajectory(graph_vis_data.poses, timestamp);
+        publish_loop_closures(graph_vis_data.poses, graph_vis_data.loop_closure_edges, timestamp);
+        publish_map(graph_vis_data.map, timestamp);
     }
 }
 
@@ -179,8 +163,8 @@ void Mapper3DNode::publish_point_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr
     point_cloud_pub_->publish(point_cloud_msg);
 }
 
-void Mapper3DNode::publish_keypoint_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
-                                          const std::string &frame_id, const rclcpp::Time &timestamp) {
+void Mapper3DNode::publish_keypoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const std::string &frame_id,
+                                     const rclcpp::Time &timestamp) {
     sensor_msgs::msg::PointCloud2 point_cloud_msg;
     pcl::toROSMsg(*point_cloud, point_cloud_msg);
     point_cloud_msg.header.frame_id = frame_id;
@@ -189,126 +173,112 @@ void Mapper3DNode::publish_keypoint_cloud(const pcl::PointCloud<pcl::PointXYZ>::
     keypoint_pub_->publish(point_cloud_msg);
 }
 
-void Mapper3DNode::publish_pose_trajectory() {
-    if (pose_trajectory_pub_->get_subscription_count() > 0) {
-        const gtsam::Values &graph = mapper3d_.get_online_poses();
-
-        nav_msgs::msg::Path path;
-        path.header.stamp = this->now();
-        path.header.frame_id = map_frame_id_;
-        path.poses.reserve(graph.size());
-
-        for (const auto &[key, value] : graph) {
-            gtsam::Pose3 pose;
-            if (graph.exists<gtsam::Pose3>(key)) {
-                pose = graph.at<gtsam::Pose3>(key);
-            } else {
-                Logger::warn("Warning: Pose for key " + std::to_string(key) + " not found in graph.");
-                continue;
-            }
-
-            geometry_msgs::msg::PoseStamped pose_stamped;
-            pose_stamped.header.stamp = path.header.stamp;
-            pose_stamped.header.frame_id = path.header.frame_id;
-
-            pose_stamped.pose.position.x = pose.translation().x();
-            pose_stamped.pose.position.y = pose.translation().y();
-            pose_stamped.pose.position.z = pose.translation().z();
-
-            const auto quat = pose.rotation().toQuaternion();
-            pose_stamped.pose.orientation.x = quat.x();
-            pose_stamped.pose.orientation.y = quat.y();
-            pose_stamped.pose.orientation.z = quat.z();
-            pose_stamped.pose.orientation.w = quat.w();
-
-            path.poses.emplace_back(pose_stamped);
-        }
-
-        assert(path.poses.size() == graph.size());
-
-        // Logger::debug("Publishing pose graph");
-        pose_trajectory_pub_->publish(path);
-    }
-}
-
-void Mapper3DNode::publish_loop_closures() {
-    if (loop_closure_pub_->get_subscription_count() > 0) {
-        const auto &poses = mapper3d_.get_online_poses();
-        const auto &factors = mapper3d_.get_graph();
-
-        visualization_msgs::msg::MarkerArray loop_closures;
-        auto &loop_closure = loop_closures.markers.emplace_back();
-
-        loop_closure.header.frame_id = map_frame_id_;
-        loop_closure.header.stamp = this->now();
-        loop_closure.ns = "loop_closures";
-        loop_closure.id = 0;
-        loop_closure.type = visualization_msgs::msg::Marker::LINE_LIST;
-        loop_closure.action = visualization_msgs::msg::Marker::ADD;
-        loop_closure.pose.orientation.w = 1.0;
-        loop_closure.scale.x = 0.05;  // Line width
-        loop_closure.color.r = 1.0;
-        loop_closure.color.g = 0.0;
-        loop_closure.color.b = 1.0;
-        loop_closure.color.a = 0.8;
-
-        for (const auto &factor : factors) {
-            const auto between_factor = boost::dynamic_pointer_cast<gtsam::BetweenFactor<gtsam::Pose3>>(factor);
-            if (!between_factor) {
-                continue;
-            }
-
-            const gtsam::Key key1 = between_factor->key1();
-            const gtsam::Key key2 = between_factor->key2();
-
-            // Heuristic: loop closures connect non-consecutive frames
-            if (gtsam::Symbol(key2).index() > gtsam::Symbol(key1).index() + 1) {
-                if (poses.exists(key1) && poses.exists(key2)) {
-                    const gtsam::Pose3 pose1 = poses.at<gtsam::Pose3>(key1);
-                    const gtsam::Pose3 pose2 = poses.at<gtsam::Pose3>(key2);
-
-                    geometry_msgs::msg::Point position1;
-                    position1.x = pose1.translation().x();
-                    position1.y = pose1.translation().y();
-                    position1.z = pose1.translation().z();
-
-                    geometry_msgs::msg::Point position2;
-                    position2.x = pose2.translation().x();
-                    position2.y = pose2.translation().y();
-                    position2.z = pose2.translation().z();
-
-                    loop_closure.points.push_back(position1);
-                    loop_closure.points.push_back(position2);
-                }
-            }
-        }
-        loop_closure_pub_->publish(loop_closures);
-    }
-}
-
-void Mapper3DNode::publish_map() {
+void Mapper3DNode::publish_pose_trajectory(const std::vector<Sophus::SE3d> &poses, const rclcpp::Time &timestamp) {
     Timer timer(__func__, LogLevel::Debug);
 
-    if (map_pub_->get_subscription_count() > 0) {
-        const auto map = mapper3d_.get_map();
-
-        // Downsample the map to reduce size
-        pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_map(new pcl::PointCloud<pcl::PointXYZ>());
-        pcl::VoxelGrid<pcl::PointXYZ> voxel_grid;
-        const float voxel_size = 1.0F;  // TODO: Make configurable
-        voxel_grid.setInputCloud(map.makeShared());
-        voxel_grid.setLeafSize(voxel_size, voxel_size, voxel_size);
-        voxel_grid.filter(*downsampled_map);
-
-        sensor_msgs::msg::PointCloud2 map_msg;
-        pcl::toROSMsg(*downsampled_map, map_msg);
-        map_msg.header.frame_id = map_frame_id_;
-        map_msg.header.stamp = this->now();
-
-        map_pub_->publish(map_msg);
-
-        RCLCPP_INFO_STREAM(this->get_logger(), "Published map with " << map.size() << " points.");
+    if (pose_trajectory_pub_->get_subscription_count() == 0) {
+        return;
     }
+
+    nav_msgs::msg::Path path;
+    path.header.stamp = timestamp;
+    path.header.frame_id = map_frame_id_;
+    path.poses.reserve(poses.size());
+
+    for (const auto &pose : poses) {
+        geometry_msgs::msg::PoseStamped pose_stamped;
+        pose_stamped.header.stamp = path.header.stamp;
+        pose_stamped.header.frame_id = path.header.frame_id;
+
+        pose_stamped.pose.position.x = pose.translation().x();
+        pose_stamped.pose.position.y = pose.translation().y();
+        pose_stamped.pose.position.z = pose.translation().z();
+
+        const auto quat = pose.unit_quaternion();
+        pose_stamped.pose.orientation.x = quat.x();
+        pose_stamped.pose.orientation.y = quat.y();
+        pose_stamped.pose.orientation.z = quat.z();
+        pose_stamped.pose.orientation.w = quat.w();
+
+        path.poses.emplace_back(pose_stamped);
+    }
+
+    assert(path.poses.size() == values.size());
+
+    // RCLCPP_DEBUG(this->get_logger(), "Publishing pose graph");
+    pose_trajectory_pub_->publish(path);
+}
+
+void Mapper3DNode::publish_loop_closures(const std::vector<Sophus::SE3d> &poses,
+                                         const std::vector<std::pair<size_t, size_t>> &loop_closure_edges,
+                                         const rclcpp::Time &timestamp) {
+    Timer timer(__func__, LogLevel::Debug);
+
+    if (loop_closure_pub_->get_subscription_count() == 0) {
+        return;
+    }
+
+    visualization_msgs::msg::MarkerArray loop_closures;
+    auto &loop_closure = loop_closures.markers.emplace_back();
+
+    loop_closure.header.frame_id = map_frame_id_;
+    loop_closure.header.stamp = timestamp;
+    loop_closure.ns = "loop_closures";
+    loop_closure.id = 0;
+    loop_closure.type = visualization_msgs::msg::Marker::LINE_LIST;
+    loop_closure.action = visualization_msgs::msg::Marker::ADD;
+    loop_closure.pose.orientation.w = 1.0;
+    loop_closure.scale.x = 0.05;  // Line width
+    loop_closure.color.r = 1.0;
+    loop_closure.color.g = 0.0;
+    loop_closure.color.b = 1.0;
+    loop_closure.color.a = 0.8;
+
+    for (const std::pair<size_t, size_t> &edge : loop_closure_edges) {
+        const Sophus::SE3d &pose1 = poses[edge.first];
+        const Sophus::SE3d &pose2 = poses[edge.second];
+
+        geometry_msgs::msg::Point point1;
+        point1.x = pose1.translation().x();
+        point1.y = pose1.translation().y();
+        point1.z = pose1.translation().z();
+
+        geometry_msgs::msg::Point point2;
+        point2.x = pose2.translation().x();
+        point2.y = pose2.translation().y();
+        point2.z = pose2.translation().z();
+
+        loop_closure.points.emplace_back(point1);
+        loop_closure.points.emplace_back(point2);
+    }
+
+    loop_closure_pub_->publish(loop_closures);
+}
+
+void Mapper3DNode::publish_map(const pcl::PointCloud<pcl::PointXYZ>::ConstPtr &map, const rclcpp::Time &timestamp) {
+    Timer timer(__func__, LogLevel::Debug);
+
+    if (!map || map_pub_->get_subscription_count() == 0) {
+        return;
+    }
+
+    // Downsample the map to reduce size. The snapshot is passed by pointer, so no copy
+    // of the map is made here.
+    pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_map(new pcl::PointCloud<pcl::PointXYZ>());
+    pcl::VoxelGrid<pcl::PointXYZ> voxel_grid;
+    const float voxel_size = 0.5F;  // TODO: Make configurable
+    voxel_grid.setInputCloud(map);
+    voxel_grid.setLeafSize(voxel_size, voxel_size, voxel_size);
+    voxel_grid.filter(*downsampled_map);
+
+    sensor_msgs::msg::PointCloud2 map_msg;
+    pcl::toROSMsg(*downsampled_map, map_msg);
+    map_msg.header.frame_id = map_frame_id_;
+    map_msg.header.stamp = timestamp;
+
+    map_pub_->publish(map_msg);
+
+    RCLCPP_INFO_STREAM(this->get_logger(), "Published map with " << map->size() << " points.");
 }
 
 int main(int argc, char **argv) {

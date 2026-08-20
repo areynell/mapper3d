@@ -6,6 +6,7 @@
 #include <gtsam/nonlinear/GncParams.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
+#include <gtsam/slam/dataset.h>
 #include <openvdb/openvdb.h>
 #include <pcl/point_cloud.h>
 
@@ -25,6 +26,7 @@ namespace mapper3d {
 struct GraphOptimizerParams {
     int max_iterations = 100;
     // gtsam::GncLossType loss_type = gtsam::GncLossType::TLS;
+    double map_voxel_size = 0.5;  // Voxel resolution of the accumulated map (m)
 
     LoopClosureDetectorParams loop_closure_detector_params;
 };
@@ -46,6 +48,25 @@ class GraphOptimizer {
 
     void process_frames();
 
+    gtsam::Values get_unoptimized_poses();
+
+    gtsam::Values get_optimized_poses();
+
+    void get_visualization_data(VisualizationData& data);
+
+    // std::vector<Sophus::SE3d> get_online_poses();
+
+    // std::vector<std::pair<size_t, size_t>> get_loop_closure_edges();
+
+    gtsam::NonlinearFactorGraph get_graph();
+
+    pcl::PointCloud<pcl::PointXYZ>::ConstPtr get_map();
+
+    // std::vector<Eigen::Matrix<double, 6, 6>> get_pose_covariances();
+
+    Sophus::SE3d map_to_odom_transform();
+
+   private:
     void add_odometry_constraint(const Sophus::SE3d& pose, const Eigen::Matrix<double, 6, 6>& odometry_covariance);
 
     void add_loop_closure_constraint(size_t prev_pose_id, size_t pose_id, const Sophus::SE3d& relative_pose,
@@ -55,28 +76,19 @@ class GraphOptimizer {
 
     void generate_optimized_vdb_map();
 
-    void generate_optimized_point_cloud_map();
-
-    gtsam::Values get_unoptimized_poses();
-
-    gtsam::Values get_optimized_poses();
-
-    gtsam::Values get_online_poses();
-
-    gtsam::NonlinearFactorGraph get_graph();
-
-    pcl::PointCloud<pcl::PointXYZ> get_map();
-
-    Sophus::SE3d map_to_odom_transform();
-
-   private:
     void update_map_to_odom_transform();
 
     void update_frame_poses();
 
     void update_vdb_map(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const Sophus::SE3d& sensor_pose);
 
-    void update_point_cloud_map(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const Sophus::SE3d& sensor_pose);
+    // Rebuilds map_snapshot_ from map_vdb_ if the grid changed since the last call.
+    // IMPORTANT: The caller must hold map_mutex_.
+    pcl::PointCloud<pcl::PointXYZ>::ConstPtr rebuild_map_snapshot();
+
+    std::vector<Sophus::SE3d> extract_online_poses();
+
+    std::vector<std::pair<size_t, size_t>> extract_loop_closure_edges();
 
     gtsam::LevenbergMarquardtParams lm_params_;
     gtsam::GncParams<gtsam::LevenbergMarquardtParams> gnc_params_;
@@ -85,7 +97,7 @@ class GraphOptimizer {
 
     std::mutex graph_mutex_;
     gtsam::NonlinearFactorGraph graph_;
-    gtsam::Values initial_estimates_;
+    gtsam::Values unoptimized_estimates_;
     gtsam::Values optimized_estimates_;
     gtsam::Values online_estimates_;
     bool incremental_optimization_;
@@ -110,9 +122,15 @@ class GraphOptimizer {
     Sophus::SE3d map_to_odom_transform_;
 
     std::mutex map_mutex_;
-    pcl::PointCloud<pcl::PointXYZ>::Ptr map_pcd_;
-    openvdb::FloatGrid::Ptr map_vdb_;
-    float map_voxel_size_;
+    openvdb::BoolGrid::Ptr map_vdb_;
+    double map_voxel_size_;
+
+    pcl::PointCloud<pcl::PointXYZ>::ConstPtr map_snapshot_;
+    bool map_changed_;
+
+    // // Visualization and debugging
+    // std::vector<Sophus::SE3d> online_poses_;
+    // std::vector<std::pair<size_t, size_t>> loop_closure_edges_;
 };
 
 }  // namespace mapper3d

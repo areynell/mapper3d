@@ -68,13 +68,16 @@ void GraphOptimizer::add_frame(const Frame& frame) {
 }
 
 void GraphOptimizer::process_frames() {
-    Frame frame;
-    bool new_frame_available = false;
+    while (true) {
+        // IMPORTANT: add_frame() writes unprocessed_frames_ and latest_frame_received_time_ from the ROS callback
+        // thread. Everything this loop needs from that shared state is snapshotted into these locals inside the
+        // critical section below, so that nothing outside the lock reads it directly.
+        Frame frame;
+        bool new_frame_available = false;
+        bool stop_requested = false;
+        bool queue_empty = true;
+        std::chrono::steady_clock::time_point latest_frame_received_time;
 
-    while (!stop_processing_frames_) {
-        Timer timer(__func__, LogLevel::Debug);
-
-        new_frame_available = false;
         {
             std::unique_lock<std::mutex> lock(unprocessed_frames_mutex_);
             // Wait until:
@@ -84,20 +87,23 @@ void GraphOptimizer::process_frames() {
             frame_processing_cv_.wait_for(lock, optimization_trigger_interval_,
                                           [this] { return !unprocessed_frames_.empty() || stop_processing_frames_; });
 
-            // If stop is signaled and the queue is empty, exit the loop.
-            if (stop_processing_frames_ && unprocessed_frames_.empty() && num_new_loop_closures_ == 0) {
-                break;
-            }
+            stop_requested = stop_processing_frames_;
 
             // Process the frame if available
             if (!unprocessed_frames_.empty()) {
                 Logger::debug("unprocessed_frames_.size() = " + std::to_string(unprocessed_frames_.size()));
 
-                frame = unprocessed_frames_.front();
+                frame = std::move(unprocessed_frames_.front());
                 unprocessed_frames_.pop();
                 new_frame_available = true;
             }
+
+            queue_empty = unprocessed_frames_.empty();
+            latest_frame_received_time = latest_frame_received_time_;
         }
+
+        // NOTE: Declared after the wait so that the timer measures the work, not the idle wait.
+        Timer timer(__func__, LogLevel::Debug);
 
         if (new_frame_available) {
             add_odometry_constraint(frame.pose, frame.odometry_covariance);
@@ -125,7 +131,7 @@ void GraphOptimizer::process_frames() {
 
         const auto current_time = std::chrono::steady_clock::now();
         const auto time_since_latest_optimization = current_time - latest_optimization_time_;
-        const auto time_since_latest_frame_received = current_time - latest_frame_received_time_;
+        const auto time_since_latest_frame_received = current_time - latest_frame_received_time;
 
         Logger::info("Time since latest optimization: " +
                      std::to_string(std::chrono::duration<double>(time_since_latest_optimization).count()) +
@@ -137,9 +143,15 @@ void GraphOptimizer::process_frames() {
             optimize();
         }
         // Perform optimization if there are no unprocessed frames and enough time has passed since the last frame
-        else if ((num_new_loop_closures_ > 0) && unprocessed_frames_.empty() &&
+        else if ((num_new_loop_closures_ > 0) && queue_empty &&
                  (time_since_latest_frame_received > optimization_trigger_interval_)) {
             optimize();
+        }
+
+        // If stop is signaled and the queue is drained, exit the loop. The check sits after the
+        // frame is processed, so that a frame popped in this iteration is never discarded.
+        if (stop_requested && queue_empty && num_new_loop_closures_ == 0) {
+            break;
         }
     }
 }

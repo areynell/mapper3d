@@ -36,13 +36,13 @@ class GraphOptimizer {
     GraphOptimizer() = delete;
     GraphOptimizer(const GraphOptimizerParams& params);
 
-    ~GraphOptimizer() = default;
+    ~GraphOptimizer();
 
     GraphOptimizer(const GraphOptimizer&) = delete;
     GraphOptimizer& operator=(const GraphOptimizer&) = delete;
 
-    GraphOptimizer(GraphOptimizer&&) = default;
-    GraphOptimizer& operator=(GraphOptimizer&&) = default;
+    GraphOptimizer(GraphOptimizer&&) = delete;
+    GraphOptimizer& operator=(GraphOptimizer&&) = delete;
 
     void add_frame(const Frame& frame);
 
@@ -73,6 +73,8 @@ class GraphOptimizer {
                                      const Eigen::Matrix<double, 6, 6>& loop_closure_covariance);
 
     void optimize();
+
+    void save_map_and_graph();
 
     void generate_optimized_vdb_map();
 
@@ -108,7 +110,6 @@ class GraphOptimizer {
     std::mutex processed_frames_mutex_;
     std::vector<Frame> processed_frames_;
     std::condition_variable frame_processing_cv_;
-    std::thread frame_processing_thread_;
     std::chrono::steady_clock::time_point latest_frame_received_time_;
 
     std::chrono::steady_clock::time_point latest_optimization_time_;
@@ -127,6 +128,8 @@ class GraphOptimizer {
 
     pcl::PointCloud<pcl::PointXYZ>::ConstPtr map_snapshot_;
     bool map_changed_;
+
+    std::thread frame_processing_thread_;
 
     // // Visualization and debugging
     // std::vector<Sophus::SE3d> online_poses_;

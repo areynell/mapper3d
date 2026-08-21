@@ -55,6 +55,21 @@ GraphOptimizer::GraphOptimizer(const GraphOptimizerParams& params)
     frame_processing_thread_ = std::thread(&GraphOptimizer::process_frames, this);
 }
 
+GraphOptimizer::~GraphOptimizer() {
+    {
+        std::scoped_lock<std::mutex> lock(unprocessed_frames_mutex_);
+        stop_processing_frames_ = true;
+    }
+
+    // Wake the processing thread. It processes any frames that remain in the queue, writes the
+    // final map and graph to disk, then exits its loop.
+    frame_processing_cv_.notify_all();
+
+    if (frame_processing_thread_.joinable()) {
+        frame_processing_thread_.join();
+    }
+}
+
 void GraphOptimizer::add_frame(const Frame& frame) {
     {
         std::scoped_lock<std::mutex> lock(unprocessed_frames_mutex_);
@@ -148,9 +163,15 @@ void GraphOptimizer::process_frames() {
             optimize();
         }
 
-        // If stop is signaled and the queue is drained, exit the loop. The check sits after the
-        // frame is processed, so that a frame popped in this iteration is never discarded.
-        if (stop_requested && queue_empty && num_new_loop_closures_ == 0) {
+        // Shutdown: no frames remain in the queue. Optimize once more if loop closures were added
+        // since the last optimization, write the final map and graph to disk, then exit. The check
+        // sits after the frame is processed, so that a frame popped in this iteration is never
+        // discarded.
+        if (stop_requested && queue_empty) {
+            if (num_new_loop_closures_ > 0) {
+                optimize();
+            }
+            save_map_and_graph();
             break;
         }
     }
@@ -254,16 +275,34 @@ void GraphOptimizer::optimize() {
 
     num_new_loop_closures_ = 0;                                    // Reset the counter after optimization
     latest_optimization_time_ = std::chrono::steady_clock::now();  // Update the time of the latest optimization
+}
 
-    // Save the graph to a file
+void GraphOptimizer::save_map_and_graph() {
+    Timer timer(__func__, LogLevel::InfoImportant);
+
     gtsam::writeG2o(graph_, unoptimized_estimates_, "unoptimized_graph.g2o");
-    gtsam::writeG2o(graph_, optimized_estimates_, "optimized_graph.g2o");
+
+    if (optimized_estimates_.empty()) {
+        Logger::warn("No optimization has run, skipping the optimized graph write.");
+    } else {
+        gtsam::writeG2o(graph_, optimized_estimates_, "optimized_graph.g2o");
+    }
 
     // Save point cloud map to disk. This writes the voxelized snapshot, whose size is
     // bounded by the volume explored.
+    // IMPORTANT: The snapshot is immutable once published, so take the pointer under map_mutex_ and
+    // release the lock before the slow disk write.
+    pcl::PointCloud<pcl::PointXYZ>::ConstPtr map_snapshot;
     {
         std::scoped_lock<std::mutex> lock(map_mutex_);
-        pcl::io::savePLYFileBinary("map_pcd.ply", *rebuild_map_snapshot());
+        map_snapshot = rebuild_map_snapshot();
+    }
+    if (map_snapshot->empty()) {
+        // Shutting down before any frame was mapped. PCL treats an empty cloud as an error.
+        Logger::warn("Map is empty, skipping the point cloud write.");
+    } else {
+        pcl::io::savePLYFileBinary("map_pcd.ply", *map_snapshot);
+        Logger::info_important("Map saved to disk.");
     }
 
     // // Save VDB map to disk
@@ -272,8 +311,6 @@ void GraphOptimizer::optimize() {
     // grids.push_back(map_vdb_);
     // vdb_file.write(grids);
     // vdb_file.close();
-
-    Logger::info("Map saved to disk.");
 }
 
 void GraphOptimizer::update_map_to_odom_transform() {

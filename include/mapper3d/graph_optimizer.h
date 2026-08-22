@@ -84,8 +84,6 @@ class GraphOptimizer {
 
     void update_vdb_map(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const Sophus::SE3d& sensor_pose);
 
-    // Rebuilds map_snapshot_ from map_vdb_ if the grid changed since the last call.
-    // IMPORTANT: The caller must hold map_mutex_.
     pcl::PointCloud<pcl::PointXYZ>::ConstPtr rebuild_map_snapshot();
 
     std::vector<Sophus::SE3d> extract_online_poses();
@@ -99,8 +97,12 @@ class GraphOptimizer {
 
     std::mutex graph_mutex_;
     gtsam::NonlinearFactorGraph graph_;
+    // The graph optimizer's initial guess provided by lidar odometry poses in the odom frame.
     gtsam::Values unoptimized_estimates_;
+    // The result of the most recent graph optimization in the map frame.
     gtsam::Values optimized_estimates_;
+    // Same result as optimized_estimates_, but updated incrementally with new lidar odometry
+    // poses transformed into the map frame, to provide a more up-to-date estimate for visualization.
     gtsam::Values online_estimates_;
     bool incremental_optimization_;
 

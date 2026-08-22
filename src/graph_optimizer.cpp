@@ -248,24 +248,33 @@ void GraphOptimizer::add_loop_closure_constraint(size_t prev_pose_id, size_t pos
 }
 
 void GraphOptimizer::optimize() {
+    Timer timer(__func__, LogLevel::InfoImportant);
+
+    Logger::info_important("Optimizing pose graph...");
+
+    // IMPORTANT: The solve runs unlocked, so a long optimization never blocks the reader threads. This is
+    // safe because the frame-processing thread is the sole writer of graph_ and the estimates.
+    // gtsam::GncOptimizer<gtsam::GncParams<gtsam::LevenbergMarquardtParams>> optimizer(graph_, initial_estimates_);
+    gtsam::GncOptimizer<gtsam::GncParams<gtsam::LevenbergMarquardtParams>> optimizer(graph_, unoptimized_estimates_,
+                                                                                     gnc_params_);
+
+    gtsam::Values optimized_estimates = optimizer.optimize();
     {
-        Timer timer(__func__, LogLevel::InfoImportant);
+        // gtsam::Values has no move assignment, so swap the result in rather than copy it, and let the
+        // previous one die with the local once the lock is released.
         std::scoped_lock<std::mutex> lock(graph_mutex_);
 
-        Logger::info_important("Optimizing pose graph...");
+        optimized_estimates_.swap(optimized_estimates);
 
-        // gtsam::GncOptimizer<gtsam::GncParams<gtsam::LevenbergMarquardtParams>> optimizer(graph_, initial_estimates_);
-        gtsam::GncOptimizer<gtsam::GncParams<gtsam::LevenbergMarquardtParams>> optimizer(graph_, unoptimized_estimates_,
-                                                                                         gnc_params_);
-
-        optimized_estimates_ = optimizer.optimize();
+        // Same result as optimized_estimates_, but updated incrementally with new lidar odometry
+        // poses transformed into the map frame, to provide a more up-to-date estimate for visualization.
         online_estimates_ = optimized_estimates_;
-
-        // online_poses_ = extract_online_poses();
-        // loop_closure_edges_ = extract_loop_closure_edges();
-
-        Logger::info_important("Pose graph optimized.");
     }
+
+    // online_poses_ = extract_online_poses();
+    // loop_closure_edges_ = extract_loop_closure_edges();
+
+    Logger::info_important("Pose graph optimized.");
 
     // Very important: The map->odom transform is used to correct lidar odometry drift
     update_map_to_odom_transform();
@@ -280,6 +289,7 @@ void GraphOptimizer::optimize() {
 void GraphOptimizer::save_map_and_graph() {
     Timer timer(__func__, LogLevel::InfoImportant);
 
+    // No graph_mutex_: runs on the frame-processing thread, the sole writer of graph_ and the estimates.
     gtsam::writeG2o(graph_, unoptimized_estimates_, "unoptimized_graph.g2o");
 
     if (optimized_estimates_.empty()) {
@@ -314,20 +324,17 @@ void GraphOptimizer::save_map_and_graph() {
 }
 
 void GraphOptimizer::update_map_to_odom_transform() {
+    // No graph_mutex_: optimize() calls this on the thread that owns every member read below.
+    const gtsam::Symbol latest_pose_symbol('x', current_pose_index_ - 1);
+    const gtsam::Pose3 latest_unoptimized_pose = unoptimized_estimates_.at<gtsam::Pose3>(latest_pose_symbol);
+    const gtsam::Pose3 latest_optimized_pose = optimized_estimates_.at<gtsam::Pose3>(latest_pose_symbol);
+
+    const gtsam::Pose3 pose_difference = latest_optimized_pose * latest_unoptimized_pose.inverse();
+    const Sophus::SE3d pose_correction(pose_difference.rotation().toQuaternion(), pose_difference.translation());
+
     {
-        std::scoped_lock<std::mutex> lock(graph_mutex_);
-
-        const gtsam::Symbol latest_pose_symbol('x', current_pose_index_ - 1);
-        const gtsam::Pose3 latest_unoptimized_pose = unoptimized_estimates_.at<gtsam::Pose3>(latest_pose_symbol);
-        const gtsam::Pose3 latest_optimized_pose = optimized_estimates_.at<gtsam::Pose3>(latest_pose_symbol);
-
-        const gtsam::Pose3 pose_difference = latest_optimized_pose * latest_unoptimized_pose.inverse();
-        const Sophus::SE3d pose_correction(pose_difference.rotation().toQuaternion(), pose_difference.translation());
-
-        {
-            std::scoped_lock<std::mutex> lock(map_to_odom_transform_mutex_);
-            map_to_odom_transform_ = pose_correction;
-        }
+        std::scoped_lock<std::mutex> lock(map_to_odom_transform_mutex_);
+        map_to_odom_transform_ = pose_correction;
     }
 }
 
@@ -443,7 +450,7 @@ void GraphOptimizer::get_visualization_data(VisualizationData& data) {
 }
 
 std::vector<Sophus::SE3d> GraphOptimizer::extract_online_poses() {
-    // std::scoped_lock<std::mutex> lock(graph_mutex_);
+    // IMPORTANT: The caller must hold graph_mutex_.
 
     std::vector<Sophus::SE3d> poses;
     poses.reserve(online_estimates_.size());
@@ -461,7 +468,7 @@ std::vector<Sophus::SE3d> GraphOptimizer::extract_online_poses() {
 }
 
 std::vector<std::pair<size_t, size_t>> GraphOptimizer::extract_loop_closure_edges() {
-    // std::scoped_lock<std::mutex> lock(graph_mutex_);
+    // IMPORTANT: The caller must hold graph_mutex_.
 
     std::vector<std::pair<size_t, size_t>> edges;
 

@@ -57,8 +57,13 @@ Mapper3DNode::Mapper3DNode(const Mapper3DNodeParams &params)
 }
 
 Mapper3DNode::~Mapper3DNode() {
-    run_visualization_thread_ = false;
+    {
+        std::scoped_lock<std::mutex> lock(visualization_mutex_);
+        run_visualization_thread_ = false;
+    }
+
     visualization_cv_.notify_all();
+
     if (visualization_thread_.joinable()) {
         visualization_thread_.join();
     }
@@ -121,7 +126,7 @@ void Mapper3DNode::notify_visualization_thread() {
 }
 
 void Mapper3DNode::visualization_thread_func() {
-    while (run_visualization_thread_) {
+    while (true) {
         {
             std::unique_lock<std::mutex> lock(visualization_mutex_);
             visualization_cv_.wait(lock, [this]() { return !run_visualization_thread_ || new_data_available_; });

@@ -11,6 +11,7 @@
 #include <mutex>
 
 #include "mapper3d/logging.h"
+#include "mapper3d/utils.h"
 
 namespace mapper3d {
 
@@ -50,6 +51,9 @@ GraphOptimizer::GraphOptimizer(const GraphOptimizerParams& params)
     map_vdb_ = openvdb::BoolGrid::create();
     map_vdb_->setTransform(openvdb::math::Transform::createLinearTransform(map_voxel_size_));
     map_changed_ = false;
+
+    unoptimized_trajectory_file_ = params.unoptimized_trajectory_file;
+    optimized_trajectory_file_ = params.optimized_trajectory_file;
 
     // Start processing frames in a separate thread
     frame_processing_thread_ = std::thread(&GraphOptimizer::process_frames, this);
@@ -121,7 +125,7 @@ void GraphOptimizer::process_frames() {
         Timer timer(__func__, LogLevel::Debug);
 
         if (new_frame_available) {
-            add_odometry_constraint(frame.pose, frame.odometry_covariance);
+            add_odometry_constraint(frame.pose, frame.timestamp, frame.odometry_covariance);
 
             const auto loop_closure = loop_closure_detector_.detect_loop_closures(frame);
             if (loop_closure) {
@@ -164,24 +168,25 @@ void GraphOptimizer::process_frames() {
         }
 
         // Shutdown: no frames remain in the queue. Optimize once more if loop closures were added
-        // since the last optimization, write the final map and graph to disk, then exit. The check
+        // since the last optimization, write the final results to disk, then exit. The check
         // sits after the frame is processed, so that a frame popped in this iteration is never
         // discarded.
         if (stop_requested && queue_empty) {
             if (num_new_loop_closures_ > 0) {
                 optimize();
             }
-            save_map_and_graph();
+            save_results();
             break;
         }
     }
 }
 
-void GraphOptimizer::add_odometry_constraint(const Sophus::SE3d& pose,
+void GraphOptimizer::add_odometry_constraint(const Sophus::SE3d& pose, const double timestamp,
                                              const Eigen::Matrix<double, 6, 6>& odometry_covariance) {
     std::scoped_lock<std::mutex> lock(graph_mutex_);
 
     const gtsam::Symbol current_pose_symbol('x', current_pose_index_);
+    keyframe_timestamps_.emplace_back(timestamp);
 
     // if (incremental_optimization_) {
     //     const Sophus::SE3d pose_in_map_frame = map_to_odom_transform_ * pose;
@@ -286,7 +291,7 @@ void GraphOptimizer::optimize() {
     latest_optimization_time_ = std::chrono::steady_clock::now();  // Update the time of the latest optimization
 }
 
-void GraphOptimizer::save_map_and_graph() {
+void GraphOptimizer::save_results() {
     Timer timer(__func__, LogLevel::InfoImportant);
 
     // No graph_mutex_: runs on the frame-processing thread, the sole writer of graph_ and the estimates.
@@ -297,6 +302,8 @@ void GraphOptimizer::save_map_and_graph() {
     } else {
         gtsam::writeG2o(graph_, optimized_estimates_, "optimized_graph.g2o");
     }
+
+    save_trajectories();
 
     // Save point cloud map to disk. This writes the voxelized snapshot, whose size is
     // bounded by the volume explored.
@@ -321,6 +328,54 @@ void GraphOptimizer::save_map_and_graph() {
     // grids.push_back(map_vdb_);
     // vdb_file.write(grids);
     // vdb_file.close();
+}
+
+void GraphOptimizer::save_trajectories() {
+    // Written as timestamped TUM trajectories so they can be scored against ground truth with evo.
+    write_keyframe_trajectory(unoptimized_estimates_, unoptimized_trajectory_file_,
+                              "mapper3d lidar odometry at keyframes, odom frame");
+
+    if (optimized_estimates_.empty()) {
+        Logger::warn("No optimization has run, skipping the optimized trajectory write.");
+    } else {
+        write_keyframe_trajectory(optimized_estimates_, optimized_trajectory_file_,
+                                  "mapper3d optimized pose graph, one pose per keyframe, map frame");
+    }
+}
+
+void GraphOptimizer::write_keyframe_trajectory(const gtsam::Values& estimates, const std::string& path,
+                                               const std::string& description) {
+    // No graph_mutex_: called from save_results() on the frame-processing thread, the sole
+    // writer of the estimates and of keyframe_timestamps_.
+
+    std::ofstream file = utils::open_tum_file(path, description);
+    if (!file) {
+        return;
+    }
+
+    // gtsam::Values iterates in key order, so the poses come out in keyframe order. Index the
+    // timestamps by the symbol's index rather than by loop position, so the pose and its stamp
+    // cannot drift apart if a key is ever missing.
+    size_t num_poses_written = 0;
+    for (const auto& key_value : estimates) {
+        const gtsam::Key key = key_value.key;
+        if (!estimates.exists<gtsam::Pose3>(key)) {
+            continue;
+        }
+
+        const size_t pose_index = gtsam::Symbol(key).index();
+        if (pose_index >= keyframe_timestamps_.size()) {
+            Logger::warn("No timestamp for pose index " + std::to_string(pose_index) + ", skipping it in " + path);
+            continue;
+        }
+
+        const gtsam::Pose3 pose = estimates.at<gtsam::Pose3>(key);
+        utils::write_tum_pose(file, keyframe_timestamps_[pose_index],
+                              Sophus::SE3d(pose.rotation().toQuaternion(), pose.translation()));
+        num_poses_written++;
+    }
+
+    Logger::info_important("Wrote " + std::to_string(num_poses_written) + " poses to " + path);
 }
 
 void GraphOptimizer::update_map_to_odom_transform() {

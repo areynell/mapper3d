@@ -85,7 +85,7 @@ void Mapper3DNode::pointcloud_callback(const sensor_msgs::msg::PointCloud2::Shar
     const auto cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
     pcl::fromROSMsg(*msg, *cloud);
 
-    mapper3d_.spin_once(cloud);
+    mapper3d_.spin_once(cloud, msg_time.seconds());
     // map_to_sensor_transform_ = mapper3d_.sensor_pose();
     // map_to_sensor_transform_ = mapper3d_.sensor_pose_map_frame();
 

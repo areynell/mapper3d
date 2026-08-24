@@ -1,5 +1,7 @@
 #include "mapper3d/utils.h"
 
+#include <iomanip>
+#include <string>
 #include <vector>
 
 #include "mapper3d/logging.h"
@@ -90,6 +92,32 @@ Sophus::SE3d constrain_pose_to_se2(const Sophus::SE3d& pose) {
 double deg2rad(const double deg) { return deg * (M_PI / 180.0); }
 
 double rad2deg(const double rad) { return rad * (180.0 / M_PI); }
+
+std::ofstream open_tum_file(const std::string& path, const std::string& description) {
+    std::ofstream file;
+
+    file.open(path);
+    if (!file.is_open()) {
+        Logger::error("Failed to open trajectory file for writing: " + path);
+        return file;
+    }
+
+    file << "# " << description << "\n";
+    file << "# timestamp tx ty tz qx qy qz qw\n";
+
+    Logger::info_important("Writing trajectory to " + path);
+
+    return file;
+}
+
+void write_tum_pose(std::ostream& out, const double timestamp, const Sophus::SE3d& pose) {
+    const Eigen::Vector3d& translation = pose.translation();
+    const Eigen::Quaterniond quaternion = pose.unit_quaternion();
+
+    out << std::fixed << std::setprecision(9) << timestamp << ' ' << translation.x() << ' ' << translation.y() << ' '
+        << translation.z() << ' ' << quaternion.x() << ' ' << quaternion.y() << ' ' << quaternion.z() << ' '
+        << quaternion.w() << '\n';
+}
 
 }  // namespace utils
 }  // namespace mapper3d

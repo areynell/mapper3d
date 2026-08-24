@@ -54,9 +54,14 @@ Mapper3D::Mapper3D(const Mapper3DParams& params)
     local_registration_.setRegistrationType(params.local_reg_params.registration_type);
 
     voxel_grid_.setLeafSize(params.voxel_size, params.voxel_size, params.voxel_size);
+
+    lidar_odometry_trajectory_file_ =
+        utils::open_tum_file(params.lidar_odometry_trajectory_file, "Poses in odom frame");
+    online_trajectory_file_ =
+        utils::open_tum_file(params.online_trajectory_file, "Poses in map frame (drift corrected)");
 }
 
-void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) {
+void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const double timestamp) {
     Timer timer(__func__, LogLevel::InfoImportant);
 
     if (point_cloud->empty()) {
@@ -76,7 +81,7 @@ void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) 
 
     // IMPORTANT: Only keyframes become graph nodes, but odometry stays frame-to-frame.
     if (should_add_keyframe(sensor_pose_odom_frame_)) {
-        graph_optimizer_.add_frame(Frame(pose_id_, sensor_pose_odom_frame_,
+        graph_optimizer_.add_frame(Frame(pose_id_, timestamp, sensor_pose_odom_frame_,
                                          pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>()),
                                          downsampled_point_cloud_, odometry_covariance_));
 
@@ -94,6 +99,9 @@ void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) 
 
     prev_downsampled_point_cloud_ = downsampled_point_cloud_;
     prev_sensor_pose_odom_frame_ = sensor_pose_odom_frame_;
+
+    utils::write_tum_pose(lidar_odometry_trajectory_file_, timestamp, sensor_pose_odom_frame_);
+    utils::write_tum_pose(online_trajectory_file_, timestamp, sensor_pose_map_frame_);
 }
 
 bool Mapper3D::should_add_keyframe(const Sophus::SE3d& sensor_pose) const {

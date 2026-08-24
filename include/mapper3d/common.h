@@ -27,6 +27,7 @@ struct VisualizationData {
 
 struct Frame {
     size_t id;
+    double timestamp;
     Sophus::SE3d pose;
     pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud;  // Full resolution point cloud
     pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_point_cloud;
@@ -34,15 +35,17 @@ struct Frame {
 
     Frame()
         : id(0),
+          timestamp(0.0),
           pose(Sophus::SE3d()),
           point_cloud(new pcl::PointCloud<pcl::PointXYZ>()),
           downsampled_point_cloud(new pcl::PointCloud<pcl::PointXYZ>()),
           odometry_covariance(Eigen::Matrix<double, 6, 6>::Zero()) {}
 
-    Frame(size_t id, const Sophus::SE3d &pose, const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
+    Frame(size_t id, double timestamp, const Sophus::SE3d &pose, const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
           const pcl::PointCloud<pcl::PointXYZ>::Ptr &downsampled_point_cloud,
           const Eigen::Matrix<double, 6, 6> &odometry_covariance)
         : id(id),
+          timestamp(timestamp),
           pose(pose),
           point_cloud(point_cloud),
           downsampled_point_cloud(downsampled_point_cloud),

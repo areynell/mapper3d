@@ -4,8 +4,10 @@
 #include <pcl/point_types.h>
 
 #include <Eigen/Core>
+#include <fstream>
 #include <small_gicp/registration/registration_helper.hpp>
 #include <sophus/se3.hpp>
+#include <string>
 #include <vector>
 
 namespace mapper3d {
@@ -20,6 +22,14 @@ Sophus::SE3d constrain_pose_to_se2(const Sophus::SE3d& pose);
 
 double deg2rad(const double deg);
 double rad2deg(const double rad);
+
+// Trajectory output in the TUM format that evo consumes:
+// timestamp tx ty tz qx qy qz qw
+// One pose per line, timestamp in seconds.
+std::ofstream open_tum_file(const std::string& path, const std::string& description);
+
+// Write a single pose to a TUM trajectory file.
+void write_tum_pose(std::ostream& out, const double timestamp, const Sophus::SE3d& pose);
 
 }  // namespace utils
 }  // namespace mapper3d

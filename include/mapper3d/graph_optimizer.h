@@ -16,7 +16,9 @@
 #include <mutex>
 #include <queue>
 #include <sophus/se3.hpp>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include "mapper3d/common.h"
 #include "mapper3d/loop_closure_detector.h"
@@ -27,6 +29,10 @@ struct GraphOptimizerParams {
     int max_iterations = 100;
     // gtsam::GncLossType loss_type = gtsam::GncLossType::TLS;
     double map_voxel_size = 0.5;  // Voxel resolution of the accumulated map (m)
+
+    // Keyframe trajectories written to disk in the TUM format at shutdown for offline evaluation with evo.
+    std::string unoptimized_trajectory_file = "unoptimized_keyframes_tum.txt";
+    std::string optimized_trajectory_file = "optimized_keyframes_tum.txt";
 
     LoopClosureDetectorParams loop_closure_detector_params;
 };
@@ -67,14 +73,20 @@ class GraphOptimizer {
     Sophus::SE3d map_to_odom_transform();
 
    private:
-    void add_odometry_constraint(const Sophus::SE3d& pose, const Eigen::Matrix<double, 6, 6>& odometry_covariance);
+    void add_odometry_constraint(const Sophus::SE3d& pose, const double timestamp,
+                                 const Eigen::Matrix<double, 6, 6>& odometry_covariance);
 
     void add_loop_closure_constraint(size_t prev_pose_id, size_t pose_id, const Sophus::SE3d& relative_pose,
                                      const Eigen::Matrix<double, 6, 6>& loop_closure_covariance);
 
     void optimize();
 
-    void save_map_and_graph();
+    void save_results();
+
+    void save_trajectories();
+
+    void write_keyframe_trajectory(const gtsam::Values& estimates, const std::string& path,
+                                   const std::string& description);
 
     void generate_optimized_vdb_map();
 
@@ -104,6 +116,8 @@ class GraphOptimizer {
     // Same result as optimized_estimates_, but updated incrementally with new lidar odometry
     // poses transformed into the map frame, to provide a more up-to-date estimate for visualization.
     gtsam::Values online_estimates_;
+    // Scan timestamp of each keyframe, which makes the saved trajectories matchable to ground truth.
+    std::vector<double> keyframe_timestamps_;
     bool incremental_optimization_;
 
     bool stop_processing_frames_;
@@ -130,6 +144,9 @@ class GraphOptimizer {
 
     pcl::PointCloud<pcl::PointXYZ>::ConstPtr map_snapshot_;
     bool map_changed_;
+
+    std::string unoptimized_trajectory_file_;
+    std::string optimized_trajectory_file_;
 
     std::thread frame_processing_thread_;
 

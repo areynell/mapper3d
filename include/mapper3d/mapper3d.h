@@ -8,13 +8,14 @@
 #include <pcl/registration/gicp.h>
 #include <pcl/visualization/pcl_visualizer.h>
 
-#include <deque>
+#include <fstream>
 #include <kiss_matcher/FasterPFH.hpp>
 #include <kiss_matcher/KISSMatcher.hpp>
 #include <small_gicp/pcl/pcl_point.hpp>
 #include <small_gicp/pcl/pcl_point_traits.hpp>
 #include <small_gicp/pcl/pcl_registration.hpp>
 #include <sophus/se3.hpp>
+#include <string>
 #include <vector>
 
 #include "mapper3d/graph_optimizer.h"
@@ -45,6 +46,10 @@ struct Mapper3DParams {
     double keyframe_distance_threshold = 1.0;                   // Min translation between keyframes (m)
     double keyframe_rotation_threshold = utils::deg2rad(10.0);  // Min rotation between keyframes (rad)
 
+    // Per-scan trajectories written to disk in the TUM format, for offline evaluation with evo.
+    std::string lidar_odometry_trajectory_file = "lidar_odometry_tum.txt";
+    std::string online_trajectory_file = "online_estimate_tum.txt";
+
     double x_odom_uncertainty = 0.02;                     // X position uncertainty for lidar odometry (m)
     double y_odom_uncertainty = 0.02;                     // Y position uncertainty for lidar odometry (m)
     double z_odom_uncertainty = 0.02;                     // Z position uncertainty for lidar odometry (m)
@@ -61,7 +66,7 @@ class Mapper3D {
     Mapper3D() = delete;
     Mapper3D(const Mapper3DParams &params);
 
-    void spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud);
+    void spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const double timestamp);
 
     Sophus::SE3d sensor_pose_odom_frame() const;
     Sophus::SE3d sensor_pose_map_frame() const;
@@ -142,6 +147,9 @@ class Mapper3D {
     std::vector<Eigen::Vector3f> global_registration_keypoints_;
 
     GraphOptimizer graph_optimizer_;
+
+    std::ofstream lidar_odometry_trajectory_file_;
+    std::ofstream online_trajectory_file_;
 
     size_t pose_id_;
 };

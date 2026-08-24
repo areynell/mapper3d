@@ -172,6 +172,12 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+# Install python scripts as package executables (ros2 run mapper3d <script>.py)
+install(PROGRAMS
+  scripts/kitti_gt_to_tum.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # Install launch files
 install(
   DIRECTORY launch

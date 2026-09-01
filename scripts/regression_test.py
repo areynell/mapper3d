@@ -71,6 +71,19 @@ PLAYBACK_RATE = 1.0
 STARTUP_TIMEOUT = 60.0
 SHUTDOWN_TIMEOUT = 300.0
 
+# How long to wait for "ros2 bag play" to appear on the point cloud topic as a publisher.
+PLAYER_TIMEOUT = 30.0
+
+# How long to wait, after both the player's publisher and the node's subscription are in the ROS
+# graph, before letting the bag run. Being listed in the graph does not prove the two have joined
+# to each other. The wait is spent with the player paused, so it holds every scan and costs
+# nothing.
+DISCOVERY_SETTLE_SECONDS = 2.0
+
+# The service a paused "ros2 bag play" offers to start the playback.
+PLAYER_RESUME_SERVICE = "/rosbag2_player/resume"
+PLAYER_RESUME_TYPE = "rosbag2_interfaces/srv/Resume"
+
 # Timestamp association tolerance, for both scoring and plotting.
 TIME_TOLERANCE = 0.01
 
@@ -108,6 +121,32 @@ def wait_for_subscriber(node, timeout):
             return True
 
         time.sleep(1.0)
+
+    return False
+
+def wait_for_publisher(playback, timeout):
+    """Wait until "ros2 bag play" has created its publisher. Returns True on success.
+
+    A paused player creates its publisher straight away, so this returns once the player is in the
+    ROS graph and before it has sent a single scan.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if playback.poll() is not None:
+            return False
+
+        result = subprocess.run(
+            ["ros2", "topic", "info", POINT_CLOUD_TOPIC],
+            capture_output=True,
+            text=True,
+        )
+        # "ros2 topic info" prints a "Publisher count: N" line. A non-zero count means the player
+        # has finished starting up.
+        match = re.search(r"Publisher count:\s*(\d+)", result.stdout)
+        if match and int(match.group(1)) > 0:
+            return True
+
+        time.sleep(0.5)
 
     return False
 
@@ -180,6 +219,17 @@ def count_poses(path):
             count += 1
     return count
 
+def read_timestamps(path):
+    """Return the timestamp column of a TUM trajectory, in file order."""
+    stamps = []
+    with path.open() as handle:
+        for line in handle:
+            line = line.strip()
+            if line == "" or line.startswith("#"):
+                continue  # skip blank lines and comments
+            stamps.append(float(line.split()[0]))
+    return stamps
+
 def run_evo_ape(run_dir, filename, results_zip):
     """Score one trajectory file against ground truth. Returns (rmse, error message)."""
     command = ["evo_ape", "tum", "gt.txt", filename, "--align", "--t_max_diff", str(TIME_TOLERANCE), "--save_results", results_zip, "--silent", "--no_warnings",]
@@ -196,6 +246,37 @@ def run_evo_ape(run_dir, filename, results_zip):
     with zipfile.ZipFile(run_dir / results_zip) as archive:
         stats = json.loads(archive.read("stats.json"))
     return round(stats["rmse"], 4), None
+
+def count_missed_scans(run_dir):
+    """Count the scans that never reached the node, and how many of those were at the start of the run.
+
+    Returns the `ground_truth_poses`, `missed_scans` and `missed_start_scans` fields, or an empty
+    dictionary when either file is missing.
+    """
+    ground_truth = run_dir / "gt.txt"
+    trajectory = run_dir / SCORED_TRAJECTORIES[0][1]
+    if not ground_truth.is_file() or not trajectory.is_file():
+        return {}
+
+    gt_stamps = read_timestamps(ground_truth)
+    trajectory_stamps = read_timestamps(trajectory)
+
+    # The node may have missed scans at the start of the run, before it subscribed to the point cloud topic.
+    # Count how many ground truth poses were earlier than the first pose the node actually received.
+    if trajectory_stamps:
+        first_kept_stamp = trajectory_stamps[0] - TIME_TOLERANCE
+        missed_start_scans = 0
+        for stamp in gt_stamps:
+            if stamp < first_kept_stamp:
+                missed_start_scans += 1
+    else:
+        missed_start_scans = len(gt_stamps)
+
+    return {
+        "ground_truth_poses": len(gt_stamps),
+        "missed_scans": len(gt_stamps) - len(trajectory_stamps),
+        "missed_start_scans": missed_start_scans,
+    }
 
 def score_trajectories(run_dir):
     """Score the front-end and back-end trajectories against ground truth.
@@ -218,6 +299,8 @@ def score_trajectories(run_dir):
 
         result[f"{name}_ape_rmse"] = rmse
         result[f"{name}_poses"] = count_poses(trajectory)
+
+    result.update(count_missed_scans(run_dir))
 
     return result
 
@@ -291,11 +374,12 @@ def run_sequence(sequence, run_dir, inputs, args):
         return {"status": "ground_truth_failed", "detail": convert.stderr.strip()}
 
     started = time.monotonic()
+    node_log = open(run_dir / "node.log", "w")
     # Non-blocking call to start the node so the bag can be played with it listening.
     node = subprocess.Popen(
         [str(NODE_BINARY)],
         cwd=run_dir,
-        stdout=subprocess.DEVNULL,
+        stdout=node_log,
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
@@ -303,6 +387,7 @@ def run_sequence(sequence, run_dir, inputs, args):
     # Play the bag into the node, then stop it cleanly. Any failure along the way returns a status
     # instead of a score, so a partial run is never mistaken for a good one. The `finally` covers the
     # early returns below it, which would otherwise leave the node running.
+    playback = None
     try:
         # Wait for the node to subscribe to the point cloud topic before playing the bag, or it will miss scans.
         if not wait_for_subscriber(node, STARTUP_TIMEOUT):
@@ -314,10 +399,45 @@ def run_sequence(sequence, run_dir, inputs, args):
             return {"status": "startup_failed", "detail": reason}
 
         print(f"  playing {inputs['bag'].name}")
-        # Blocking call, that lasts until the bag is done playing. The node may exit part way through, which is caught below.
-        playback = subprocess.run(
-            ["ros2", "bag", "play", str(inputs["bag"]), "--rate", str(PLAYBACK_RATE)]
+        # The bag starts paused and is released only after its publisher and the node's
+        # subscription have had time to join.
+        playback = subprocess.Popen(
+            ["ros2", "bag", "play", str(inputs["bag"]), "--rate", str(PLAYBACK_RATE),
+             "--start-paused"]
         )
+        if not wait_for_publisher(playback, PLAYER_TIMEOUT):
+            return {
+                "status": "playback_failed",
+                "detail": (f"'ros2 bag play' did not publish on {POINT_CLOUD_TOPIC} "
+                           f"within {PLAYER_TIMEOUT:.0f}s"),
+            }
+
+        # The player and the node are both in the ROS graph now, but their connection to each
+        # other can still be incomplete, and a scan sent before it completes is lost. The bag is
+        # still paused, so it sends nothing during this wait and no scan can be lost here.
+        time.sleep(DISCOVERY_SETTLE_SECONDS)
+
+        # "ros2 service call" waits until the service appears, and it never gives up on its own.
+        # If the player never offers PLAYER_RESUME_SERVICE, this script would wait for ever.
+        # The timeout argument below is what ends that wait.
+        try:
+            resume = subprocess.run(
+                ["ros2", "service", "call", PLAYER_RESUME_SERVICE, PLAYER_RESUME_TYPE],
+                capture_output=True, text=True, timeout=PLAYER_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return {
+                "status": "playback_failed",
+                "detail": (f"{PLAYER_RESUME_SERVICE} did not answer within "
+                           f"{PLAYER_TIMEOUT:.0f}s, so the bag stayed paused"),
+            }
+        if resume.returncode != 0:
+            return {
+                "status": "playback_failed",
+                "detail": f"could not resume playback: {resume.stderr.strip()}",
+            }
+
+        # Lasts until the bag is done playing. The node may exit part way through, which is caught below.
+        playback.wait()
         if playback.returncode != 0:
             return {
                 "status": "playback_failed",
@@ -334,11 +454,18 @@ def run_sequence(sequence, run_dir, inputs, args):
         # Shutdown the node cleanly, so it writes its trajectories and map. If it does not exit in time, kill it and report a failure.
         clean_exit = shut_down_node(node, SHUTDOWN_TIMEOUT)
     finally:
+        # Never leave a player running: it is started paused inside the block above, so any early
+        # return between there and the end of playback would otherwise leave it holding the topic.
+        # Note that poll() returns None if the process is still running, or its exit code if it has exited.
+        if playback is not None and playback.poll() is None:
+            playback.kill()
+            playback.wait()
         # Never leave a node running: the next sequence would find the topic already subscribed and
         # play its bag into both nodes.
         if node.poll() is None:
             node.kill()
             node.wait()
+        node_log.close()
 
     if not clean_exit:
         return {"status": "shutdown_failed", "detail": "the node had to be killed, so its output is truncated"}
@@ -479,6 +606,10 @@ def print_sequence_result(sequence, result, out_dir):
             print(f"  {name + ' APE':<14} not written")
         else:
             print(f"  {name + ' APE':<14} {rmse:.3f} m over {result[f'{name}_poses']} poses")
+    missed = result.get("missed_scans")
+    if missed:
+        print(f"  {'missed scans':<14} {missed} of {result['ground_truth_poses']} never reached the "
+              f"node, {result.get('missed_start_scans', 0)} of them at the start of the run")
     print(f"  {'resources':<14} peak RSS {result['peak_rss_mb']} MB, "
           f"CPU {result.get('cpu_percent', 0):.0f}%")
     plot = out_dir / sequence / "trajectories.png"

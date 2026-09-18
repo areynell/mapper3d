@@ -9,11 +9,12 @@
 #include <pcl/visualization/pcl_visualizer.h>
 
 #include <fstream>
-#include <kiss_matcher/FasterPFH.hpp>
-#include <kiss_matcher/KISSMatcher.hpp>
+#include <memory>
+#include <small_gicp/ann/gaussian_voxelmap.hpp>
 #include <small_gicp/pcl/pcl_point.hpp>
 #include <small_gicp/pcl/pcl_point_traits.hpp>
-#include <small_gicp/pcl/pcl_registration.hpp>
+#include <small_gicp/pcl/pcl_proxy.hpp>
+#include <small_gicp/registration/registration_result.hpp>
 #include <sophus/se3.hpp>
 #include <string>
 #include <vector>
@@ -22,17 +23,18 @@
 
 namespace mapper3d {
 
-struct GlobalRegistrationParams {
-    // TODO
-};
-
 struct LocalRegistrationParams {
-    // double voxel_size = 0.5;                   // Voxel resolution for downsampling (m)
     int num_threads = 8;                       // Number of threads for GICP
     int num_neighbors_for_covariance = 20;     // Number of neighbors for covariance estimation
-    double max_correspondence_distance = 1.0;  // Maximum correspondence distance (m)
-    std::string registration_type = "VGICP";   // Registration type: "VGICP" or "GICP"
-    // TODO: Register against the last N frames instead of the last frame
+    size_t wide_search_scans_after_reset = 5;  // Number of scans to allow a wide search window after local map reset
+
+    // At 10 Hz the normal gap is 0.1 s and one dropped scan gives 0.2 s.
+    double dropped_scan_interval = 0.15;  // (s)
+
+    // Size of the rolling local map, in insertions. A voxel no scan has touched for lru_horizon
+    // insertions is deleted, and the delete pass runs every lru_clear_cycle.
+    size_t lru_horizon = 100;
+    size_t lru_clear_cycle = 10;
 };
 
 struct Mapper3DParams {
@@ -66,26 +68,16 @@ class Mapper3D {
     Mapper3D() = delete;
     Mapper3D(const Mapper3DParams &params);
 
-    void spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const double timestamp);
+    void spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const double point_cloud_timestamp);
 
     Sophus::SE3d sensor_pose_odom_frame() const;
     Sophus::SE3d sensor_pose_map_frame() const;
 
     const pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_point_cloud() const;
 
-    // const std::vector<Eigen::Vector3f> &point_cloud_vec() const;
-
-    const std::vector<Eigen::Vector3f> &global_registration_point_cloud() const;
-
-    const std::vector<Eigen::Vector3f> &global_registration_keypoints() const;
-
     gtsam::Values get_unoptimized_poses();
 
     gtsam::Values get_optimized_poses();
-
-    // std::vector<Sophus::SE3d> get_online_poses();
-
-    // std::vector<std::pair<size_t, size_t>> get_loop_closure_edges();
 
     gtsam::NonlinearFactorGraph get_graph();
 
@@ -94,15 +86,24 @@ class Mapper3D {
     void get_graph_visualization_data(VisualizationData &data);
 
    private:
-    Sophus::SE3d estimate_lidar_odometry(const pcl::PointCloud<pcl::PointXYZ>::Ptr &prev_point_cloud,
-                                         const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
-                                         const Sophus::SE3d &prev_sensor_pose);
+    void check_homogeneous_point_format(const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud) const;
 
     bool should_add_keyframe(const Sophus::SE3d &sensor_pose) const;
 
-    Sophus::SE3d local_registration(const pcl::PointCloud<pcl::PointXYZ>::Ptr &prev_point_cloud,
-                                    const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
-                                    const Sophus::SE3d &initial_transform_guess);
+    Sophus::SE3d estimate_lidar_odometry(const Sophus::SE3d &prev_pose, const Sophus::SE3d::Tangent &prev_twist,
+                                         const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud, const double dt);
+
+    Sophus::SE3d::Tangent estimate_twist(const Sophus::SE3d &prev_pose, const Sophus::SE3d &pose, const double dt);
+
+    Sophus::SE3d predict_sensor_pose(const Sophus::SE3d &pose, const Sophus::SE3d::Tangent &twist,
+                                     const double dt) const;
+
+    void estimate_scan_covariances(small_gicp::PointCloudProxy<pcl::PointXYZ> &source);
+
+    small_gicp::RegistrationResult align_to_local_map(const small_gicp::PointCloudProxy<pcl::PointXYZ> &source,
+                                                      const Sophus::SE3d &initial_guess, const double dt) const;
+
+    bool use_wide_correspondence_search(const double dt) const;
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr filter_point_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud);
 
@@ -112,26 +113,27 @@ class Mapper3D {
     pcl::PointCloud<pcl::PointXYZ>::Ptr remove_points_near_sensor(const pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
                                                                   const double min_distance);
 
-    void enqueue_visualization_data(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
-                                    const Sophus::SE3d &sensor_pose);
-
-    // Sophus::SE3d predict_sensor_motion();
-
     double z_height_threshold_;
     double min_sensor_distance_;
     pcl::VoxelGrid<pcl::PointXYZ> voxel_grid_;
 
-    kiss_matcher::KISSMatcherConfig global_registration_config_;
-    kiss_matcher::KISSMatcher global_registration_;
-    small_gicp::RegistrationPCL<pcl::PointXYZ, pcl::PointXYZ> local_registration_;
+    small_gicp::GaussianVoxelMap::Ptr local_map_;
 
-    bool constrain_pose_to_se2_;
+    // Per-point covariances of the current scan.
+    std::vector<Eigen::Matrix4d> scan_covariances_;
+    int registration_num_threads_;
+    int num_neighbors_for_covariance_;
+    size_t wide_search_scans_after_reset_;
+    size_t scans_since_map_reset_;
+    double dropped_scan_interval_;
 
-    pcl::PointCloud<pcl::PointXYZ>::Ptr prev_downsampled_point_cloud_;
     pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_point_cloud_;
 
     Sophus::SE3d prev_sensor_pose_odom_frame_;
     Sophus::SE3d sensor_pose_odom_frame_;
+    Sophus::SE3d::Tangent prev_twist_;
+    double prev_point_cloud_timestamp_;
+
     Sophus::SE3d sensor_pose_map_frame_;
 
     double keyframe_distance_threshold_;
@@ -140,18 +142,13 @@ class Mapper3D {
 
     Eigen::Matrix<double, 6, 6> odometry_covariance_;
 
-    std::vector<Eigen::Vector3f> global_registration_processed_prev_point_cloud_;
-    std::vector<Eigen::Vector3f> global_registration_processed_point_cloud_;
-
-    std::vector<Eigen::Vector3f> global_registration_prev_keypoints_;
-    std::vector<Eigen::Vector3f> global_registration_keypoints_;
-
     GraphOptimizer graph_optimizer_;
 
     std::ofstream lidar_odometry_trajectory_file_;
     std::ofstream online_trajectory_file_;
 
-    size_t pose_id_;
+    size_t point_cloud_id_;
+    size_t keyframe_id_;
 };
 
 }  // namespace mapper3d

@@ -34,12 +34,6 @@ Mapper3DNode::Mapper3DNode(const Mapper3DNodeParams &params)
         params.point_cloud_sub_topic, params.sub_queue_size,
         std::bind(&Mapper3DNode::pointcloud_callback, this, std::placeholders::_1));
 
-    point_cloud_pub_ =
-        this->create_publisher<sensor_msgs::msg::PointCloud2>(params.point_cloud_pub_topic, params.pub_queue_size);
-
-    keypoint_pub_ =
-        this->create_publisher<sensor_msgs::msg::PointCloud2>(params.keypoint_pub_topic, params.pub_queue_size);
-
     pose_trajectory_pub_ =
         this->create_publisher<nav_msgs::msg::Path>(params.pose_trajectory_pub_topic, params.pub_queue_size);
 
@@ -156,26 +150,6 @@ void Mapper3DNode::visualization_thread_func() {
         publish_loop_closures(graph_vis_data.poses, graph_vis_data.loop_closure_edges, timestamp);
         publish_map(graph_vis_data.map, timestamp);
     }
-}
-
-void Mapper3DNode::publish_point_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
-                                       const std::string &frame_id, const rclcpp::Time &timestamp) {
-    sensor_msgs::msg::PointCloud2 point_cloud_msg;
-    pcl::toROSMsg(*point_cloud, point_cloud_msg);
-    point_cloud_msg.header.frame_id = frame_id;
-    point_cloud_msg.header.stamp = timestamp;
-
-    point_cloud_pub_->publish(point_cloud_msg);
-}
-
-void Mapper3DNode::publish_keypoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const std::string &frame_id,
-                                     const rclcpp::Time &timestamp) {
-    sensor_msgs::msg::PointCloud2 point_cloud_msg;
-    pcl::toROSMsg(*point_cloud, point_cloud_msg);
-    point_cloud_msg.header.frame_id = frame_id;
-    point_cloud_msg.header.stamp = timestamp;
-
-    keypoint_pub_->publish(point_cloud_msg);
 }
 
 void Mapper3DNode::publish_pose_trajectory(const std::vector<Sophus::SE3d> &poses, const rclcpp::Time &timestamp) {

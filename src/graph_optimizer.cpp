@@ -8,6 +8,8 @@
 #include <gtsam/slam/dataset.h>
 #include <pcl/io/ply_io.h>
 
+#include <fstream>
+#include <iomanip>
 #include <mutex>
 
 #include "mapper3d/logging.h"
@@ -29,7 +31,7 @@ GraphOptimizer::GraphOptimizer(const GraphOptimizerParams& params)
     // gnc_params_.setLossType(gtsam::GncLossType::GM);
     gnc_params_.setVerbosityGNC(gtsam::GncParams<gtsam::LevenbergMarquardtParams>::Verbosity::MU);
 
-    current_pose_index_ = 0;
+    current_keyframe_index_ = 0;
     stop_processing_frames_ = false;
 
     // TODO: Make these parameters configurable via GraphOptimizerParams
@@ -129,8 +131,8 @@ void GraphOptimizer::process_frames() {
 
             const auto loop_closure = loop_closure_detector_.detect_loop_closures(frame);
             if (loop_closure) {
-                add_loop_closure_constraint(loop_closure->prev_id, loop_closure->id, loop_closure->relative_pose,
-                                            loop_closure->covariance);
+                add_loop_closure_constraint(loop_closure->prev_keyframe_id, loop_closure->keyframe_id,
+                                            loop_closure->relative_pose, loop_closure->covariance);
             }
 
             {
@@ -185,7 +187,7 @@ void GraphOptimizer::add_odometry_constraint(const Sophus::SE3d& pose, const dou
                                              const Eigen::Matrix<double, 6, 6>& odometry_covariance) {
     std::scoped_lock<std::mutex> lock(graph_mutex_);
 
-    const gtsam::Symbol current_pose_symbol('x', current_pose_index_);
+    const gtsam::Symbol current_keyframe_symbol('x', current_keyframe_index_);
     keyframe_timestamps_.emplace_back(timestamp);
 
     // if (incremental_optimization_) {
@@ -197,56 +199,58 @@ void GraphOptimizer::add_odometry_constraint(const Sophus::SE3d& pose, const dou
     const gtsam::Pose3 current_pose(gtsam::Rot3(pose.unit_quaternion()), gtsam::Point3(pose.translation()));
     const auto odometry_noise_model = gtsam::noiseModel::Gaussian::Covariance(odometry_covariance);
 
-    if (current_pose_index_ == 0) {
+    if (current_keyframe_index_ == 0) {
         // // Add prior factor for the first pose in the graph
         // const Eigen::Matrix<double, 6, 6> prior_covariance =
         //     Eigen::Matrix<double, 6, 6>::Identity() * 1.0e-9;  // Very small values
-        // graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(current_pose_symbol, current_pose, prior_covariance);
+        // graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(current_keyframe_symbol, current_pose,
+        // prior_covariance);
 
-        graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(current_pose_symbol, current_pose,
+        graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(current_keyframe_symbol, current_pose,
                                                                 odometry_noise_model);
     } else {
-        const gtsam::Symbol prev_pose_symbol('x', current_pose_index_ - 1);
+        const gtsam::Symbol prev_keyframe_symbol('x', current_keyframe_index_ - 1);
 
         // Relative pose between previous pose and current pose
-        const gtsam::Pose3 prev_pose = unoptimized_estimates_.at<gtsam::Pose3>(prev_pose_symbol);
+        const gtsam::Pose3 prev_pose = unoptimized_estimates_.at<gtsam::Pose3>(prev_keyframe_symbol);
         const gtsam::Pose3 odometry_relative_pose = prev_pose.inverse() * current_pose;
 
         // Add odometry factor for subsequent poses
-        graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(prev_pose_symbol, current_pose_symbol,
+        graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(prev_keyframe_symbol, current_keyframe_symbol,
                                                                   odometry_relative_pose, odometry_noise_model);
     }
-    unoptimized_estimates_.insert(current_pose_symbol, current_pose);
+    unoptimized_estimates_.insert(current_keyframe_symbol, current_pose);
 
     // TODO: Is there a better way to create a pose graph that can be visualized live in RViz as it is being built?
     const Sophus::SE3d online_pose_in_map_frame = map_to_odom_transform_ * pose;
     const gtsam::Pose3 online_pose(gtsam::Rot3(online_pose_in_map_frame.unit_quaternion()),
                                    gtsam::Point3(online_pose_in_map_frame.translation()));
-    online_estimates_.insert(current_pose_symbol, online_pose);
+    online_estimates_.insert(current_keyframe_symbol, online_pose);
 
     // // Used for visualization
     // online_poses_.emplace_back(online_pose_in_map_frame);
 
-    current_pose_index_++;
+    current_keyframe_index_++;
 }
 
-void GraphOptimizer::add_loop_closure_constraint(size_t prev_pose_id, size_t pose_id, const Sophus::SE3d& relative_pose,
+void GraphOptimizer::add_loop_closure_constraint(size_t prev_keyframe_id, size_t keyframe_id,
+                                                 const Sophus::SE3d& relative_pose,
                                                  const Eigen::Matrix<double, 6, 6>& loop_closure_covariance) {
     std::scoped_lock<std::mutex> lock(graph_mutex_);
 
-    const gtsam::Symbol prev_pose_symbol('x', prev_pose_id);
-    const gtsam::Symbol current_pose_symbol('x', pose_id);
+    const gtsam::Symbol prev_keyframe_symbol('x', prev_keyframe_id);
+    const gtsam::Symbol current_keyframe_symbol('x', keyframe_id);
 
     const gtsam::Pose3 loop_closure_relative_pose(gtsam::Rot3(relative_pose.unit_quaternion()),
                                                   gtsam::Point3(relative_pose.translation()));
     const auto loop_closure_noise_model = gtsam::noiseModel::Gaussian::Covariance(loop_closure_covariance);
 
     // Add the loop closure factor
-    graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(prev_pose_symbol, current_pose_symbol,
+    graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(prev_keyframe_symbol, current_keyframe_symbol,
                                                               loop_closure_relative_pose, loop_closure_noise_model);
 
     // // Used for visualization
-    // loop_closure_edges_.emplace_back(prev_pose_id, pose_id);
+    // loop_closure_edges_.emplace_back(prev_keyframe_id, keyframe_id);
 
     num_new_loop_closures_++;
     num_loop_closures_++;
@@ -296,6 +300,7 @@ void GraphOptimizer::save_results() {
 
     // No graph_mutex_: runs on the frame-processing thread, the sole writer of graph_ and the estimates.
     gtsam::writeG2o(graph_, unoptimized_estimates_, "unoptimized_graph.g2o");
+    write_keyframe_stamps();
 
     if (optimized_estimates_.empty()) {
         Logger::warn("No optimization has run, skipping the optimized graph write.");
@@ -378,11 +383,27 @@ void GraphOptimizer::write_keyframe_trajectory(const gtsam::Values& estimates, c
     Logger::info_important("Wrote " + std::to_string(num_poses_written) + " poses to " + path);
 }
 
+void GraphOptimizer::write_keyframe_stamps() const {
+    std::ofstream stamps_file("keyframe_stamps.txt");
+    if (!stamps_file) {
+        Logger::warn("Could not open keyframe_stamps.txt for writing.");
+        return;
+    }
+
+    stamps_file << "# keyframe_id scan_id timestamp\n";
+    // No processed_frames_mutex_: the frame-processing thread is the sole writer and it is the
+    // thread running this.
+    for (const Frame& frame : processed_frames_) {
+        stamps_file << frame.keyframe_id << ' ' << frame.point_cloud_id << ' ' << std::fixed << std::setprecision(9)
+                    << frame.timestamp << '\n';
+    }
+}
+
 void GraphOptimizer::update_map_to_odom_transform() {
     // No graph_mutex_: optimize() calls this on the thread that owns every member read below.
-    const gtsam::Symbol latest_pose_symbol('x', current_pose_index_ - 1);
-    const gtsam::Pose3 latest_unoptimized_pose = unoptimized_estimates_.at<gtsam::Pose3>(latest_pose_symbol);
-    const gtsam::Pose3 latest_optimized_pose = optimized_estimates_.at<gtsam::Pose3>(latest_pose_symbol);
+    const gtsam::Symbol latest_keyframe_symbol('x', current_keyframe_index_ - 1);
+    const gtsam::Pose3 latest_unoptimized_pose = unoptimized_estimates_.at<gtsam::Pose3>(latest_keyframe_symbol);
+    const gtsam::Pose3 latest_optimized_pose = optimized_estimates_.at<gtsam::Pose3>(latest_keyframe_symbol);
 
     const gtsam::Pose3 pose_difference = latest_optimized_pose * latest_unoptimized_pose.inverse();
     const Sophus::SE3d pose_correction(pose_difference.rotation().toQuaternion(), pose_difference.translation());
@@ -398,12 +419,12 @@ void GraphOptimizer::update_frame_poses() {
 
     // Use the poses stored in the pose graph to update all poses in processed_frames_
     for (auto& frame : processed_frames_) {
-        const gtsam::Symbol pose_symbol('x', frame.id);
-        if (optimized_estimates_.exists(pose_symbol)) {
-            const gtsam::Pose3 optimized_pose = optimized_estimates_.at<gtsam::Pose3>(pose_symbol);
+        const gtsam::Symbol keyframe_symbol('x', frame.keyframe_id);
+        if (optimized_estimates_.exists(keyframe_symbol)) {
+            const gtsam::Pose3 optimized_pose = optimized_estimates_.at<gtsam::Pose3>(keyframe_symbol);
             frame.pose = Sophus::SE3d(optimized_pose.rotation().toQuaternion(), optimized_pose.translation());
         } else {
-            Logger::warn("Warning: Pose for frame id " + std::to_string(frame.id) +
+            Logger::warn("Warning: Pose for keyframe id " + std::to_string(frame.keyframe_id) +
                          " not found in optimized estimates.");
         }
     }

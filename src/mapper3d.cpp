@@ -6,10 +6,18 @@
 #include <pcl/segmentation/sac_segmentation.h>
 #include <pcl/visualization/pcl_visualizer.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <small_gicp/ann/kdtree_omp.hpp>
+#include <small_gicp/factors/gicp_factor.hpp>
+#include <small_gicp/registration/reduction_omp.hpp>
+#include <small_gicp/registration/registration.hpp>
 #include <small_gicp/registration/registration_helper.hpp>
+#include <small_gicp/util/normal_estimation_omp.hpp>
+#include <sophus/se3.hpp>
+#include <string>
 #include <vector>
 
 #include "mapper3d/common.h"
@@ -20,21 +28,25 @@
 namespace mapper3d {
 
 Mapper3D::Mapper3D(const Mapper3DParams& params)
-    : prev_downsampled_point_cloud_(std::make_shared<pcl::PointCloud<pcl::PointXYZ>>()),
-      downsampled_point_cloud_(std::make_shared<pcl::PointCloud<pcl::PointXYZ>>()),
+    : downsampled_point_cloud_(std::make_shared<pcl::PointCloud<pcl::PointXYZ>>()),
       prev_sensor_pose_odom_frame_(Sophus::SE3d()),
       sensor_pose_odom_frame_(Sophus::SE3d()),
+      prev_twist_(Sophus::SE3d::Tangent::Zero()),
+      prev_point_cloud_timestamp_(-1.0),
       sensor_pose_map_frame_(Sophus::SE3d()),
       z_height_threshold_(params.z_height_threshold),
       min_sensor_distance_(params.min_sensor_distance),
       keyframe_distance_threshold_(params.keyframe_distance_threshold),
       keyframe_rotation_threshold_(params.keyframe_rotation_threshold),
       latest_keyframe_pose_odom_frame_(Sophus::SE3d()),
-      global_registration_config_(params.voxel_size),
-      global_registration_(global_registration_config_),
       graph_optimizer_(params.graph_optimizer_params),
-      constrain_pose_to_se2_(false),
-      pose_id_(0) {
+      registration_num_threads_(params.local_reg_params.num_threads),
+      num_neighbors_for_covariance_(params.local_reg_params.num_neighbors_for_covariance),
+      wide_search_scans_after_reset_(params.local_reg_params.wide_search_scans_after_reset),
+      dropped_scan_interval_(params.local_reg_params.dropped_scan_interval),
+      scans_since_map_reset_(0),
+      point_cloud_id_(-1),  // Starts at -1 so the first scan increments it to 0 at the top of spin_once()
+      keyframe_id_(0) {
     Logger::set_global_log_level(LogLevel::Info);
     Timer::set_global_log_level(LogLevel::Info);
 
@@ -47,11 +59,9 @@ Mapper3D::Mapper3D(const Mapper3DParams& params)
 
     std::cout << "odometry_covariance_ = \n" << odometry_covariance_ << std::endl;
 
-    local_registration_.setNumThreads(params.local_reg_params.num_threads);
-    local_registration_.setNumNeighborsForCovariance(params.local_reg_params.num_neighbors_for_covariance);
-    local_registration_.setMaxCorrespondenceDistance(params.local_reg_params.max_correspondence_distance);
-    local_registration_.setVoxelResolution(params.voxel_size);
-    local_registration_.setRegistrationType(params.local_reg_params.registration_type);
+    local_map_ = std::make_shared<small_gicp::GaussianVoxelMap>(params.voxel_size);
+    local_map_->lru_horizon = params.local_reg_params.lru_horizon;
+    local_map_->lru_clear_cycle = params.local_reg_params.lru_clear_cycle;
 
     voxel_grid_.setLeafSize(params.voxel_size, params.voxel_size, params.voxel_size);
 
@@ -61,52 +71,71 @@ Mapper3D::Mapper3D(const Mapper3DParams& params)
         utils::open_tum_file(params.online_trajectory_file, "Poses in map frame (drift corrected)");
 }
 
-void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const double timestamp) {
+void Mapper3D::check_homogeneous_point_format(const pcl::PointCloud<pcl::PointXYZ>::Ptr& point_cloud) const {
+    // Checking first scan only. A point's fourth number, data[3], is padding that PCL fills with
+    // 1.0 by convention, which makes it the w of a homogeneous coordinate.
+    // local_map_->insert multiplies each point by the 4x4 sensor pose, and only w = 1.0 applies
+    // that pose multiplication correctly.
+    if (point_cloud_id_ != 0 || point_cloud->empty()) {
+        return;
+    }
+
+    const float w = point_cloud->points.front().data[3];
+    if (w != 1.0f) {
+        Logger::error("Filtered points have data[3] = " + std::to_string(w) +
+                      ", not 1.0. Every point inserted into the local map will be mistransformed.");
+    }
+}
+
+void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const double point_cloud_timestamp) {
     Timer timer(__func__, LogLevel::InfoImportant);
+
+    // IMPORTANT: Incremented at the start of spin_once, so point_cloud_id_ is always the current point cloud's ID even
+    // if there is an early return.
+    ++point_cloud_id_;
 
     if (point_cloud->empty()) {
         return;
     }
 
+    check_homogeneous_point_format(point_cloud);
+
     // point_cloud_ = point_cloud;
     downsampled_point_cloud_ = filter_point_cloud(point_cloud);
 
-    if (prev_downsampled_point_cloud_->empty()) {
-        prev_downsampled_point_cloud_ = downsampled_point_cloud_;
-        return;
-    }
+    const double dt = prev_point_cloud_timestamp_ < 0.0 ? 0.0 : point_cloud_timestamp - prev_point_cloud_timestamp_;
 
     sensor_pose_odom_frame_ =
-        estimate_lidar_odometry(prev_downsampled_point_cloud_, downsampled_point_cloud_, prev_sensor_pose_odom_frame_);
+        estimate_lidar_odometry(prev_sensor_pose_odom_frame_, prev_twist_, downsampled_point_cloud_, dt);
 
-    // IMPORTANT: Only keyframes become graph nodes, but odometry stays frame-to-frame.
+    // IMPORTANT: Only keyframes become graph nodes. Odometry runs on every scan.
     if (should_add_keyframe(sensor_pose_odom_frame_)) {
-        graph_optimizer_.add_frame(Frame(pose_id_, timestamp, sensor_pose_odom_frame_,
+        graph_optimizer_.add_frame(Frame(keyframe_id_, point_cloud_id_, point_cloud_timestamp, sensor_pose_odom_frame_,
                                          pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>()),
                                          downsampled_point_cloud_, odometry_covariance_));
 
         latest_keyframe_pose_odom_frame_ = sensor_pose_odom_frame_;
 
-        // IMPORTANT: pose_id_ only advances for keyframes, to stay in step with
-        // GraphOptimizer::current_pose_index_. update_frame_poses() looks poses up by
-        // frame id, so the two counters must not diverge.
-        pose_id_++;
+        keyframe_id_++;
     }
 
     const Sophus::SE3d map_to_odom_transform = graph_optimizer_.map_to_odom_transform();
-    // Very important: This is the drift-corrected pose after loop closure detection and graph optimization
+    // VERY IMPORTANT: This is the drift-corrected pose after loop closure detection and graph optimization
     sensor_pose_map_frame_ = map_to_odom_transform * sensor_pose_odom_frame_;
 
-    prev_downsampled_point_cloud_ = downsampled_point_cloud_;
-    prev_sensor_pose_odom_frame_ = sensor_pose_odom_frame_;
+    utils::write_tum_pose(lidar_odometry_trajectory_file_, point_cloud_timestamp, sensor_pose_odom_frame_);
+    utils::write_tum_pose(online_trajectory_file_, point_cloud_timestamp, sensor_pose_map_frame_);
 
-    utils::write_tum_pose(lidar_odometry_trajectory_file_, timestamp, sensor_pose_odom_frame_);
-    utils::write_tum_pose(online_trajectory_file_, timestamp, sensor_pose_map_frame_);
+    // IMPORTANT: The estimate_twist() call must come first, because it reads prev_sensor_pose_odom_frame_ as the older
+    // of the two poses and the line below it overwrites that member.
+    prev_twist_ = estimate_twist(prev_sensor_pose_odom_frame_, sensor_pose_odom_frame_, dt);
+    prev_sensor_pose_odom_frame_ = sensor_pose_odom_frame_;
+    prev_point_cloud_timestamp_ = point_cloud_timestamp;
 }
 
 bool Mapper3D::should_add_keyframe(const Sophus::SE3d& sensor_pose) const {
-    // The first frame always becomes a keyframe, to seed the graph.
-    if (pose_id_ == 0) {
+    // The first frame always becomes a keyframe.
+    if (keyframe_id_ == 0) {
         return true;
     }
 
@@ -117,60 +146,98 @@ bool Mapper3D::should_add_keyframe(const Sophus::SE3d& sensor_pose) const {
     return distance >= keyframe_distance_threshold_ || rotation >= keyframe_rotation_threshold_;
 }
 
-Sophus::SE3d Mapper3D::estimate_lidar_odometry(const pcl::PointCloud<pcl::PointXYZ>::Ptr& prev_point_cloud,
-                                               const pcl::PointCloud<pcl::PointXYZ>::Ptr& point_cloud,
-                                               const Sophus::SE3d& prev_sensor_pose) {
-    Timer timer(__func__, LogLevel::Debug);
-
-    const auto solution = global_registration_.estimate(utils::point_cloud_to_vec(point_cloud),
-                                                        utils::point_cloud_to_vec(prev_point_cloud));
-    // global_registration_.print();
-
-    const Sophus::SE3d sensor_pose_change = Sophus::SE3d(solution.rotation, solution.translation);
-
-    // TODO: Match against the last N frames instead of just the previous one (need to be careful when using this for
-    // lidar odometry vs. loop closure detection, since using last N frames for the latter won't work well with
-    // small_gicp)
-    const Sophus::SE3d refined_pose_change = local_registration(prev_point_cloud, point_cloud, sensor_pose_change);
-
-    Sophus::SE3d sensor_pose = prev_sensor_pose * refined_pose_change;
-    if (constrain_pose_to_se2_) {
-        sensor_pose = utils::constrain_pose_to_se2(sensor_pose);
+Sophus::SE3d::Tangent Mapper3D::estimate_twist(const Sophus::SE3d& prev_pose, const Sophus::SE3d& pose,
+                                               const double dt) {
+    // Two poses measured over a real interval are needed before there is any velocity. The interval is
+    // zero until a second point cloud has arrived, so the first scan reports no movement.
+    if (dt <= 0.0) {
+        return Sophus::SE3d::Tangent::Zero();
     }
 
-    const auto global_registration_processed_point_cloud_pair = global_registration_.getProcessedInputClouds();
-    global_registration_processed_prev_point_cloud_ = std::get<0>(global_registration_processed_point_cloud_pair);
-    global_registration_processed_point_cloud_ = std::get<1>(global_registration_processed_point_cloud_pair);
+    const Sophus::SE3d relative_pose = prev_pose.inverse() * pose;
+    const Sophus::SE3d::Tangent twist = relative_pose.log() / dt;
+    return twist;
+}
 
-    const auto global_registration_keypoints_pair = global_registration_.getKeypointsFromFasterPFH();
-    global_registration_prev_keypoints_ = std::get<0>(global_registration_keypoints_pair);
-    global_registration_keypoints_ = std::get<1>(global_registration_keypoints_pair);
+Sophus::SE3d Mapper3D::estimate_lidar_odometry(const Sophus::SE3d& prev_pose, const Sophus::SE3d::Tangent& prev_twist,
+                                               const pcl::PointCloud<pcl::PointXYZ>::Ptr& point_cloud,
+                                               const double dt) {
+    Timer timer(__func__, LogLevel::Info);
 
-    const auto global_registration_correspondences = global_registration_.getFinalCorrespondences();
+    small_gicp::PointCloudProxy<pcl::PointXYZ> source(*point_cloud, scan_covariances_);
 
+    estimate_scan_covariances(source);
+
+    // The first scan defines the odom frame. The local map is empty, so there is nothing to register
+    // against: put this scan in as the map's first contents and set its pose to the origin.
+    if (local_map_->size() == 0) {
+        local_map_->insert(source);
+        return Sophus::SE3d();
+    }
+
+    const Sophus::SE3d predicted_sensor_pose = predict_sensor_pose(prev_pose, prev_twist, dt);
+
+    const small_gicp::RegistrationResult registration_result = align_to_local_map(source, predicted_sensor_pose, dt);
+
+    Logger::debug("Local registration: converged=" + std::to_string(registration_result.converged) +
+                  " iterations=" + std::to_string(registration_result.iterations) +
+                  " inliers=" + std::to_string(registration_result.num_inliers) + "/" +
+                  std::to_string(point_cloud->size()) + " error=" + std::to_string(registration_result.error) +
+                  " map_voxels=" + std::to_string(local_map_->size()));
+
+    scans_since_map_reset_++;
+
+    // IMPORTANT: The target is in the odom frame, so T_target_source IS the new pose.
+    const Sophus::SE3d sensor_pose = utils::eigen_to_sophus(registration_result.T_target_source.matrix());
+    local_map_->insert(source, utils::sophus_to_isometry(sensor_pose));
     return sensor_pose;
 }
 
-Sophus::SE3d Mapper3D::local_registration(const pcl::PointCloud<pcl::PointXYZ>::Ptr& prev_point_cloud,
-                                          const pcl::PointCloud<pcl::PointXYZ>::Ptr& point_cloud,
-                                          const Sophus::SE3d& initial_transform_guess) {
-    Timer timer(__func__, LogLevel::Info);
+Sophus::SE3d Mapper3D::predict_sensor_pose(const Sophus::SE3d& pose, const Sophus::SE3d::Tangent& twist,
+                                           const double dt) const {
+    return pose * Sophus::SE3d::exp(twist * dt);
+}
 
-    local_registration_.setInputTarget(prev_point_cloud);
-    local_registration_.setInputSource(point_cloud);
+void Mapper3D::estimate_scan_covariances(small_gicp::PointCloudProxy<pcl::PointXYZ>& source) {
+    // Fills scan_covariances_ for every point of the source cloud.
 
-    pcl::PointCloud<pcl::PointXYZ> aligned_point_cloud;
-    local_registration_.align(aligned_point_cloud, initial_transform_guess.matrix().cast<float>());
+    small_gicp::KdTreeBuilderOMP builder(registration_num_threads_);
+    small_gicp::UnsafeKdTree<small_gicp::PointCloudProxy<pcl::PointXYZ>> tree(source, builder);
+    small_gicp::estimate_covariances_omp(source, tree, num_neighbors_for_covariance_, registration_num_threads_);
+}
 
-    // Logger::debug("Small GICP num inliers: " + std::to_string(result.num_inliers));
-    // Logger::debug("Small GICP error: " + std::to_string(result.error));
-    // Logger::debug("Small GICP converged: " + std::to_string(result.converged));
+small_gicp::RegistrationResult Mapper3D::align_to_local_map(const small_gicp::PointCloudProxy<pcl::PointXYZ>& source,
+                                                            const Sophus::SE3d& initial_guess, const double dt) const {
+    if (use_wide_correspondence_search(dt)) {
+        // Search the point's own voxel and its 26 neighbours (3 x 3 x 3 cube)
+        local_map_->set_search_offsets(27);
+    } else {
+        // Search the point's own voxel only
+        local_map_->set_search_offsets(1);
+    }
 
-    Eigen::Matrix4d transformation_matrix = local_registration_.getFinalTransformation().cast<double>();
-    // Orthogonalize the transformation matrix
-    Sophus::SE3d refined_pose = utils::eigen_to_sophus(transformation_matrix);
+    small_gicp::Registration<small_gicp::GICPFactor, small_gicp::ParallelReductionOMP> registration;
+    registration.reduction.num_threads = registration_num_threads_;
+    // IMPORTANT: DISABLE the distance rejector. The search offsets above already limit how far away a match can be.
+    // The default of 1 m would reject good matches from the 27-voxel search.
+    registration.rejector.max_dist_sq = std::numeric_limits<double>::max();
 
-    return refined_pose;
+    return registration.align(*local_map_, source, *local_map_, utils::sophus_to_isometry(initial_guess));
+}
+
+bool Mapper3D::use_wide_correspondence_search(const double dt) const {
+    // Search wide while the local map is new.
+    if (scans_since_map_reset_ < wide_search_scans_after_reset_) {
+        return true;
+    }
+
+    // Search wide if we have a dropped scan
+    if (dt > dropped_scan_interval_) {
+        Logger::warn("Scans have likely been dropped. Will use wide correspondence search.");
+        return true;
+    }
+
+    return false;
 }
 
 pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::filter_point_cloud(
@@ -244,57 +311,16 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::remove_points_near_sensor(const pc
     return filtered_cloud;
 }
 
-// Sophus::SE3d Mapper3D::predict_sensor_motion() {
-//     // IMPORTANT: Assumes that dt between laser scans is constant
-//     // If the above assumption is true, we can use the pose change between pose(t-1) and pose(t) to predict
-//     pose(t+1)
-
-//     // Since:
-//     // twist = log(pose_change)/dt
-//     // and:
-//     // predicted_pose = prev_pose * exp(twist * dt)
-//     // we can write:
-//     // predicted_pose = prev_pose * exp(log(pose_change)/dt * dt)
-//     // predicted_pose = prev_pose * exp(log(pose_change))
-//     // predicted_pose = prev_pose * pose_change
-
-//     if (sensor_pose_history_.size() < 2) {
-//         return Sophus::SE3d(Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
-//     }
-
-//     const Sophus::SE3d sensor_pose_tm2 = sensor_pose_history_[sensor_pose_history_.size() - 2];
-//     const Sophus::SE3d sensor_pose_tm1 = sensor_pose_history_[sensor_pose_history_.size() - 1];
-//     const Sophus::SE3d sensor_pose_change = sensor_pose_tm2.inverse() * sensor_pose_tm1;
-
-//     return sensor_pose_change;
-// }
-
 Sophus::SE3d Mapper3D::sensor_pose_odom_frame() const { return sensor_pose_odom_frame_; }
 Sophus::SE3d Mapper3D::sensor_pose_map_frame() const { return sensor_pose_map_frame_; }
 
 const pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::downsampled_point_cloud() const { return downsampled_point_cloud_; }
-
-// const std::vector<Eigen::Vector3f>& Mapper3D::point_cloud_vec() const { return point_cloud_vec_; }
-
-const std::vector<Eigen::Vector3f>& Mapper3D::global_registration_point_cloud() const {
-    return global_registration_processed_point_cloud_;
-}
-
-const std::vector<Eigen::Vector3f>& Mapper3D::global_registration_keypoints() const {
-    return global_registration_keypoints_;
-}
 
 pcl::PointCloud<pcl::PointXYZ>::ConstPtr Mapper3D::get_map() { return graph_optimizer_.get_map(); }
 
 gtsam::Values Mapper3D::get_unoptimized_poses() { return graph_optimizer_.get_unoptimized_poses(); }
 
 gtsam::Values Mapper3D::get_optimized_poses() { return graph_optimizer_.get_optimized_poses(); }
-
-// std::vector<Sophus::SE3d> Mapper3D::get_online_poses() { return graph_optimizer_.get_online_poses(); }
-
-// std::vector<std::pair<size_t, size_t>> Mapper3D::get_loop_closure_edges() {
-//     return graph_optimizer_.get_loop_closure_edges();
-// }
 
 gtsam::NonlinearFactorGraph Mapper3D::get_graph() { return graph_optimizer_.get_graph(); }
 

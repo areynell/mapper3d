@@ -29,8 +29,6 @@ struct Mapper3DNodeParams {
 
     // std::string point_cloud_sub_topic = "/points_raw";
     std::string point_cloud_sub_topic = "/velodyne_points";
-    std::string point_cloud_pub_topic = "/filtered_points";
-    std::string keypoint_pub_topic = "/keypoints";
     std::string pose_trajectory_pub_topic = "/pose_trajectory";
     std::string loop_closure_pub_topic = "/loop_closures";
     std::string map_pub_topic = "/map";
@@ -45,12 +43,6 @@ class Mapper3DNode : public rclcpp::Node {
 
    private:
     void pointcloud_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
-
-    void publish_point_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const std::string &frame_id,
-                             const rclcpp::Time &timestamp);
-
-    void publish_keypoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, const std::string &frame_id,
-                           const rclcpp::Time &timestamp);
 
     void publish_pose_trajectory(const std::vector<Sophus::SE3d> &poses, const rclcpp::Time &timestamp);
 
@@ -69,8 +61,6 @@ class Mapper3DNode : public rclcpp::Node {
     void visualization_thread_func();
 
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr point_cloud_sub_;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_cloud_pub_;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr keypoint_pub_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pose_trajectory_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr loop_closure_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub_;

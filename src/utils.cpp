@@ -44,6 +44,13 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr point_vec_to_cloud(const std::vector<Eigen::
     return point_cloud;
 }
 
+Eigen::Isometry3d sophus_to_isometry(const Sophus::SE3d& pose) {
+    Eigen::Isometry3d isometry = Eigen::Isometry3d::Identity();
+    isometry.linear() = pose.rotationMatrix();
+    isometry.translation() = pose.translation();
+    return isometry;
+}
+
 Sophus::SE3d eigen_to_sophus(const Eigen::Matrix4d& eigen_matrix) {
     Timer timer(__func__, LogLevel::Debug);
 
@@ -69,24 +76,6 @@ Sophus::SE3d eigen_to_sophus(const Eigen::Matrix4d& eigen_matrix) {
     const Eigen::Vector3d translation = eigen_matrix.block<3, 1>(0, 3);
 
     return Sophus::SE3d(orthogonal_rotation, translation);
-}
-
-Sophus::SE3d constrain_pose_to_se2(const Sophus::SE3d& pose) {
-    Timer timer(__func__, LogLevel::Debug);
-
-    Eigen::Vector3d translation = pose.translation();
-    translation.z() = 0.0;
-
-    const Eigen::Matrix3d rotation_matrix = pose.rotationMatrix();
-
-    // Calculate yaw (rotation around Z-axis)
-    // This assumes a ZYX extrinsic Euler angle convention (yaw, pitch, roll)
-    // yaw = atan2(R(1,0), R(0,0))
-    const double yaw = std::atan2(rotation_matrix(1, 0), rotation_matrix(0, 0));
-
-    const Sophus::SO3d constrained_rotation = Sophus::SO3d::rotZ(yaw);
-
-    return Sophus::SE3d(constrained_rotation, translation);
 }
 
 double deg2rad(const double deg) { return deg * (M_PI / 180.0); }

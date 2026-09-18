@@ -34,30 +34,30 @@ std::optional<LoopClosure> LoopClosureDetector::detect_loop_closures(const Frame
 
     // TODO: Match submaps instead of single point clouds to get better loop closure detection
     // TODO: Should the poses in frames_ be updated after graph optimization?
-    frames_.emplace(frame.id, frame);  // Store the current frame for future reference
+    frames_.emplace(frame.keyframe_id, frame);  // Store the current frame for future reference
 
     scan_context_manager_.makeAndSaveScancontextAndKeys(*frame.downsampled_point_cloud);
 
-    // QUESTION: Do the IDs from ScanContext++ match the frame IDs?
-    std::pair<int, float> nearest_frame_id_and_relative_yaw = scan_context_manager_.detectLoopClosureID();
-    const int nearest_frame_id = nearest_frame_id_and_relative_yaw.first;
-    const float relative_yaw = nearest_frame_id_and_relative_yaw.second;
-    if (nearest_frame_id == -1) {
-        // std::cout << "\033[31m" << "No loop closure found for current frame " << frame.id << "\033[0m" << std::endl;
+    std::pair<int, float> nearest_keyframe_id_and_relative_yaw = scan_context_manager_.detectLoopClosureID();
+    const int nearest_keyframe_id = nearest_keyframe_id_and_relative_yaw.first;
+    const float relative_yaw = nearest_keyframe_id_and_relative_yaw.second;
+    if (nearest_keyframe_id == -1) {
         return std::nullopt;  // No loop closure found
     }
 
     // TODO: Is it possible to call estimate directly on FasterPFH (keypoint, descriptor) pairs?
-    const auto solution = global_registration_.estimate(
-        utils::point_cloud_to_vec(frame.downsampled_point_cloud), utils::point_cloud_to_vec(frames_[nearest_frame_id].downsampled_point_cloud));
+    const auto solution =
+        global_registration_.estimate(utils::point_cloud_to_vec(frame.downsampled_point_cloud),
+                                      utils::point_cloud_to_vec(frames_[nearest_keyframe_id].downsampled_point_cloud));
     const Sophus::SE3d relative_pose(solution.rotation, solution.translation);
-    const Sophus::SE3d refined_relative_pose =
-        local_registration(frames_[nearest_frame_id].downsampled_point_cloud, frame.downsampled_point_cloud, relative_pose);
+    const Sophus::SE3d refined_relative_pose = local_registration(frames_[nearest_keyframe_id].downsampled_point_cloud,
+                                                                  frame.downsampled_point_cloud, relative_pose);
 
-    const auto loop_closure = LoopClosure(nearest_frame_id, frame.id, refined_relative_pose, loop_closure_covariance_);
+    const auto loop_closure =
+        LoopClosure(nearest_keyframe_id, frame.keyframe_id, refined_relative_pose, loop_closure_covariance_);
 
-    Logger::info_important("Found loop closure between frames " + std::to_string(loop_closure.prev_id) + " and " +
-                           std::to_string(loop_closure.id));
+    Logger::info_important("Found loop closure between keyframes " + std::to_string(loop_closure.prev_keyframe_id) +
+                           " and " + std::to_string(loop_closure.keyframe_id));
 
     return loop_closure;
 }
@@ -86,14 +86,14 @@ Sophus::SE3d LoopClosureDetector::local_registration(const pcl::PointCloud<pcl::
 
 void LoopClosureDetector::update_submaps(const Frame& frame) {
     if (!current_submap_.initialized()) {
-        current_submap_ = Submap(frame.id, frame.pose, frame.downsampled_point_cloud);
+        current_submap_ = Submap(frame.keyframe_id, frame.pose, frame.downsampled_point_cloud);
     }
-    current_submap_.add_point_cloud(frame.id, frame.pose, frame.downsampled_point_cloud);
+    current_submap_.add_point_cloud(frame.keyframe_id, frame.pose, frame.downsampled_point_cloud);
 
     // If the submap is finalized, add it to submaps_ and start a new submap
     if (current_submap_.finalized()) {
         submaps_.emplace(current_submap_.id, current_submap_);
-        current_submap_ = Submap(frame.id, frame.pose, frame.downsampled_point_cloud);
+        current_submap_ = Submap(frame.keyframe_id, frame.pose, frame.downsampled_point_cloud);
     }
 }
 
@@ -167,7 +167,8 @@ void LoopClosureDetector::visualize_point_cloud_alignment(const Submap& prev_sub
     // cv::destroyWindow(window_name);  // Clean up the window
 
     // Save image to disk
-    std::string filename = std::to_string(prev_submap.id) + "_to_" + std::to_string(frame.id) + "_loop_closure.png";
+    std::string filename =
+        std::to_string(prev_submap.id) + "_to_" + std::to_string(frame.keyframe_id) + "_loop_closure.png";
     cv::imwrite(filename, loop_closure_image);
     Logger::debug("Saved loop closure image: " + filename);
 }

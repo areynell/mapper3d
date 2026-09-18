@@ -4,6 +4,7 @@
 #include <pcl/point_types.h>
 
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 #include <fstream>
 #include <small_gicp/registration/registration_helper.hpp>
 #include <sophus/se3.hpp>
@@ -18,7 +19,7 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr point_vec_to_cloud(const std::vector<Eigen::
 
 Sophus::SE3d eigen_to_sophus(const Eigen::Matrix4d& eigen_matrix);
 
-Sophus::SE3d constrain_pose_to_se2(const Sophus::SE3d& pose);
+Eigen::Isometry3d sophus_to_isometry(const Sophus::SE3d& pose);
 
 double deg2rad(const double deg);
 double rad2deg(const double rad);

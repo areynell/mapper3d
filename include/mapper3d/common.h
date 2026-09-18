@@ -26,25 +26,30 @@ struct VisualizationData {
 };
 
 struct Frame {
-    size_t id;
+    size_t keyframe_id;
+    size_t point_cloud_id;
     double timestamp;
     Sophus::SE3d pose;
     pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud;  // Full resolution point cloud
+    // TODO: Rempve downsampled_point_cloud_ from Frame and let the user downsample it if needed.
     pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_point_cloud;
     Eigen::Matrix<double, 6, 6> odometry_covariance;
 
     Frame()
-        : id(0),
+        : keyframe_id(0),
+          point_cloud_id(0),
           timestamp(0.0),
           pose(Sophus::SE3d()),
           point_cloud(new pcl::PointCloud<pcl::PointXYZ>()),
           downsampled_point_cloud(new pcl::PointCloud<pcl::PointXYZ>()),
           odometry_covariance(Eigen::Matrix<double, 6, 6>::Zero()) {}
 
-    Frame(size_t id, double timestamp, const Sophus::SE3d &pose, const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
+    Frame(size_t keyframe_id, size_t point_cloud_id, double timestamp, const Sophus::SE3d &pose,
+          const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
           const pcl::PointCloud<pcl::PointXYZ>::Ptr &downsampled_point_cloud,
           const Eigen::Matrix<double, 6, 6> &odometry_covariance)
-        : id(id),
+        : keyframe_id(keyframe_id),
+          point_cloud_id(point_cloud_id),
           timestamp(timestamp),
           pose(pose),
           point_cloud(point_cloud),
@@ -64,12 +69,13 @@ struct Submap {
 
     Sophus::SE3d origin_pose;
     pcl::PointCloud<pcl::PointXYZ>::Ptr accumulated_point_cloud;
+    // TODO: Remove downsampled_point_cloud_ from Frame and let the user downsample it if needed.
     pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_point_cloud;
     std::vector<Eigen::Vector3f> downsampled_point_cloud_vec;  // Only need this because of KISS-Matcher and small_gicp
 
     // HYPOTHESIS: If we add loop closures from point cloud poses to the closest submap pose, we should get better
     // results than matching point cloud poses to the origin pose of the submap.
-    std::unordered_map<size_t, Sophus::SE3d> poses;  // Maps frame ID to its pose in the submap
+    std::unordered_map<size_t, Sophus::SE3d> keyframe_poses;
 
     Submap() : id(0), origin_pose(Sophus::SE3d()), accumulated_point_cloud(new pcl::PointCloud<pcl::PointXYZ>()) {}
 
@@ -92,7 +98,7 @@ struct Submap {
         num_frames = 1;
     }
 
-    void add_point_cloud(const size_t id, const Sophus::SE3d &sensor_pose,
+    void add_point_cloud(const size_t keyframe_id, const Sophus::SE3d &sensor_pose,
                          const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud) {
         Timer timer(__func__, LogLevel::Debug);
 
@@ -115,7 +121,7 @@ struct Submap {
 
         // Store the point cloud's pose in the submap, so we can find the closest pose later during loop closure
         // detection
-        poses[id] = sensor_pose;
+        keyframe_poses[keyframe_id] = sensor_pose;
 
         num_frames++;
     }
@@ -154,20 +160,20 @@ struct Submap {
 
         // Find the closest pose in the submap to the current frame
         Sophus::SE3d closest_pose = origin_pose;
-        size_t closest_pose_id = id;
+        size_t closest_keyframe_id = id;
         double min_distance_squared = (query_translation - origin_pose.translation()).squaredNorm();
 
         // Check all poses in the submap to find the closest one
-        for (const auto &[prev_id, prev_pose] : poses) {
+        for (const auto &[prev_keyframe_id, prev_pose] : keyframe_poses) {
             const double distance_squared = (query_translation - prev_pose.translation()).squaredNorm();
             if (distance_squared < min_distance_squared) {
                 min_distance_squared = distance_squared;
                 closest_pose = prev_pose;
-                closest_pose_id = prev_id;
+                closest_keyframe_id = prev_keyframe_id;
             }
         }
 
-        return std::make_pair(closest_pose_id, closest_pose);
+        return std::make_pair(closest_keyframe_id, closest_pose);
     }
 
     bool initialized() const {

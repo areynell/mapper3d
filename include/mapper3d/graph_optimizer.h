@@ -76,7 +76,7 @@ class GraphOptimizer {
     void add_odometry_constraint(const Sophus::SE3d& pose, const double timestamp,
                                  const Eigen::Matrix<double, 6, 6>& odometry_covariance);
 
-    void add_loop_closure_constraint(size_t prev_pose_id, size_t pose_id, const Sophus::SE3d& relative_pose,
+    void add_loop_closure_constraint(size_t prev_keyframe_id, size_t keyframe_id, const Sophus::SE3d& relative_pose,
                                      const Eigen::Matrix<double, 6, 6>& loop_closure_covariance);
 
     void optimize();
@@ -87,6 +87,9 @@ class GraphOptimizer {
 
     void write_keyframe_trajectory(const gtsam::Values& estimates, const std::string& path,
                                    const std::string& description);
+
+    // Used for debugging and evaluation against possible ground-truth datasets.
+    void write_keyframe_stamps() const;
 
     void generate_optimized_vdb_map();
 
@@ -105,7 +108,9 @@ class GraphOptimizer {
     gtsam::LevenbergMarquardtParams lm_params_;
     gtsam::GncParams<gtsam::LevenbergMarquardtParams> gnc_params_;
 
-    size_t current_pose_index_;
+    // Must stay in lockstep with Mapper3D::keyframe_id_, because Frame::keyframe_id is looked up as
+    // gtsam::Symbol('x', id) in update_frame_poses() and in every loop-closure edge.
+    size_t current_keyframe_index_;
 
     std::mutex graph_mutex_;
     gtsam::NonlinearFactorGraph graph_;

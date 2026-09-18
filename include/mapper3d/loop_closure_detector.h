@@ -30,16 +30,19 @@ struct LoopClosureDetectorParams {
 };
 
 struct LoopClosure {
-    size_t prev_id;
-    size_t id;
+    size_t prev_keyframe_id;
+    size_t keyframe_id;
     Sophus::SE3d relative_pose;
     Eigen::Matrix<double, 6, 6> covariance;
 
     LoopClosure() = default;
 
-    LoopClosure(size_t prev_id, size_t id, const Sophus::SE3d& relative_pose,
+    LoopClosure(size_t prev_keyframe_id, size_t keyframe_id, const Sophus::SE3d& relative_pose,
                 const Eigen::Matrix<double, 6, 6>& covariance)
-        : prev_id(prev_id), id(id), relative_pose(relative_pose), covariance(covariance) {}
+        : prev_keyframe_id(prev_keyframe_id),
+          keyframe_id(keyframe_id),
+          relative_pose(relative_pose),
+          covariance(covariance) {}
 };
 
 class LoopClosureDetector {
@@ -69,7 +72,7 @@ class LoopClosureDetector {
 
     Submap current_submap_;  // Current submap being built
     std::unordered_map<size_t, Submap> submaps_;
-    std::unordered_map<size_t, Frame> frames_;  // Used with ScanContext++ for loop closure detection
+    std::unordered_map<size_t, Frame> frames_;
 
     SCManager scan_context_manager_;  // ScanContext manager for loop closure detection
 };

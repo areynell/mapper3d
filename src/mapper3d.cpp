@@ -28,7 +28,8 @@
 namespace mapper3d {
 
 Mapper3D::Mapper3D(const Mapper3DParams& params)
-    : downsampled_point_cloud_(std::make_shared<pcl::PointCloud<pcl::PointXYZ>>()),
+    : prev_downsampled_point_cloud_(std::make_shared<pcl::PointCloud<pcl::PointXYZ>>()),
+      downsampled_point_cloud_(std::make_shared<pcl::PointCloud<pcl::PointXYZ>>()),
       prev_sensor_pose_odom_frame_(Sophus::SE3d()),
       sensor_pose_odom_frame_(Sophus::SE3d()),
       prev_twist_(Sophus::SE3d::Tangent::Zero()),
@@ -39,11 +40,25 @@ Mapper3D::Mapper3D(const Mapper3DParams& params)
       keyframe_distance_threshold_(params.keyframe_distance_threshold),
       keyframe_rotation_threshold_(params.keyframe_rotation_threshold),
       latest_keyframe_pose_odom_frame_(Sophus::SE3d()),
+      global_registration_config_(params.voxel_size),
+      global_registration_(global_registration_config_),
       graph_optimizer_(params.graph_optimizer_params),
       registration_num_threads_(params.local_reg_params.num_threads),
       num_neighbors_for_covariance_(params.local_reg_params.num_neighbors_for_covariance),
       wide_search_scans_after_reset_(params.local_reg_params.wide_search_scans_after_reset),
       dropped_scan_interval_(params.local_reg_params.dropped_scan_interval),
+      local_map_voxel_size_(params.voxel_size),
+      lru_horizon_(params.local_reg_params.lru_horizon),
+      lru_clear_cycle_(params.local_reg_params.lru_clear_cycle),
+      min_inlier_ratio_(params.local_reg_params.min_inlier_ratio),
+      max_error_per_inlier_(params.local_reg_params.max_error_per_inlier),
+      max_plausible_sensor_speed_(params.local_reg_params.max_plausible_sensor_speed),
+      max_consecutive_registration_failures_(params.local_reg_params.max_consecutive_failures),
+      consecutive_registration_failures_(0),
+      registration_failure_count_(0),
+      coasted_scan_count_(0),
+      relocalization_count_(0),
+      map_reset_count_(0),
       scans_since_map_reset_(0),
       point_cloud_id_(-1),  // Starts at -1 so the first scan increments it to 0 at the top of spin_once()
       keyframe_id_(0) {
@@ -59,9 +74,7 @@ Mapper3D::Mapper3D(const Mapper3DParams& params)
 
     std::cout << "odometry_covariance_ = \n" << odometry_covariance_ << std::endl;
 
-    local_map_ = std::make_shared<small_gicp::GaussianVoxelMap>(params.voxel_size);
-    local_map_->lru_horizon = params.local_reg_params.lru_horizon;
-    local_map_->lru_clear_cycle = params.local_reg_params.lru_clear_cycle;
+    local_map_ = make_local_map();
 
     voxel_grid_.setLeafSize(params.voxel_size, params.voxel_size, params.voxel_size);
 
@@ -131,6 +144,7 @@ void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, 
     prev_twist_ = estimate_twist(prev_sensor_pose_odom_frame_, sensor_pose_odom_frame_, dt);
     prev_sensor_pose_odom_frame_ = sensor_pose_odom_frame_;
     prev_point_cloud_timestamp_ = point_cloud_timestamp;
+    prev_downsampled_point_cloud_ = downsampled_point_cloud_;
 }
 
 bool Mapper3D::should_add_keyframe(const Sophus::SE3d& sensor_pose) const {
@@ -164,9 +178,8 @@ Sophus::SE3d Mapper3D::estimate_lidar_odometry(const Sophus::SE3d& prev_pose, co
                                                const double dt) {
     Timer timer(__func__, LogLevel::Info);
 
-    small_gicp::PointCloudProxy<pcl::PointXYZ> source(*point_cloud, scan_covariances_);
-
-    estimate_scan_covariances(source);
+    small_gicp::PointCloudProxy<pcl::PointXYZ> source(*point_cloud, point_cloud_covariances_);
+    estimate_point_cloud_covariances(source);
 
     // The first scan defines the odom frame. The local map is empty, so there is nothing to register
     // against: put this scan in as the map's first contents and set its pose to the origin.
@@ -179,18 +192,55 @@ Sophus::SE3d Mapper3D::estimate_lidar_odometry(const Sophus::SE3d& prev_pose, co
 
     const small_gicp::RegistrationResult registration_result = align_to_local_map(source, predicted_sensor_pose, dt);
 
-    Logger::debug("Local registration: converged=" + std::to_string(registration_result.converged) +
-                  " iterations=" + std::to_string(registration_result.iterations) +
-                  " inliers=" + std::to_string(registration_result.num_inliers) + "/" +
-                  std::to_string(point_cloud->size()) + " error=" + std::to_string(registration_result.error) +
-                  " map_voxels=" + std::to_string(local_map_->size()));
+    Logger::debug("Local registration: converged = " + std::to_string(registration_result.converged) +
+                  " iterations = " + std::to_string(registration_result.iterations) +
+                  " inliers = " + std::to_string(registration_result.num_inliers) + "/" +
+                  std::to_string(point_cloud->size()) + " error = " + std::to_string(registration_result.error) +
+                  " map_voxels = " + std::to_string(local_map_->size()));
 
     scans_since_map_reset_++;
 
-    // IMPORTANT: The target is in the odom frame, so T_target_source IS the new pose.
-    const Sophus::SE3d sensor_pose = utils::eigen_to_sophus(registration_result.T_target_source.matrix());
-    local_map_->insert(source, utils::sophus_to_isometry(sensor_pose));
-    return sensor_pose;
+    if (registration_is_acceptable(registration_result, point_cloud->size())) {
+        consecutive_registration_failures_ = 0;
+        const Sophus::SE3d sensor_pose = utils::eigen_to_sophus(registration_result.T_target_source.matrix());
+        local_map_->insert(source, utils::sophus_to_isometry(sensor_pose));
+        return sensor_pose;
+    } else {
+        registration_failure_count_++;
+        consecutive_registration_failures_++;
+
+        Logger::warn("Registration failed: inlier ratio " +
+                     std::to_string(inlier_ratio(registration_result, point_cloud->size())) + " (min " +
+                     std::to_string(min_inlier_ratio_) + "), error per inlier " +
+                     std::to_string(error_per_inlier(registration_result)) + " (max " +
+                     std::to_string(max_error_per_inlier_) + "). Failure " +
+                     std::to_string(consecutive_registration_failures_) + " in a row, " +
+                     std::to_string(registration_failure_count_) + " this run.");
+
+        // Enough failures in a row means that the front-end lidar odometry is lost, so we can no longer safely use pose
+        // prediction from estimated twist, and instead need to perform a recovery using global registration. However,
+        // if global registration also fails, we fall back to using the predicted pose once again and retry global
+        // registration when the next point cloud arrives.
+        if (consecutive_registration_failures_ >= max_consecutive_registration_failures_) {
+            const std::optional<Sophus::SE3d> recovered_sensor_pose =
+                recover_with_global_registration(prev_pose, point_cloud, source, dt);
+            if (recovered_sensor_pose.has_value()) {
+                return recovered_sensor_pose.value();
+            }
+        }
+
+        // If registration fails, use the twist-based predicted pose.
+        // IMPORTANT: The point cloud is NOT added to the local map. Its pose is only a guess, and adding it would
+        // likely contaminate the local map against which newer point clouds are registered.
+        coasted_scan_count_++;
+        Logger::warn(
+            "Using constant-velocity pose prediction. Point cloud data will NOT be added to the local map. "
+            "Registration has failed " +
+            std::to_string(consecutive_registration_failures_) + " times in a row. " +
+            std::to_string(coasted_scan_count_) + " scans have used the predicted pose this run.");
+
+        return predicted_sensor_pose;
+    }
 }
 
 Sophus::SE3d Mapper3D::predict_sensor_pose(const Sophus::SE3d& pose, const Sophus::SE3d::Tangent& twist,
@@ -198,8 +248,8 @@ Sophus::SE3d Mapper3D::predict_sensor_pose(const Sophus::SE3d& pose, const Sophu
     return pose * Sophus::SE3d::exp(twist * dt);
 }
 
-void Mapper3D::estimate_scan_covariances(small_gicp::PointCloudProxy<pcl::PointXYZ>& source) {
-    // Fills scan_covariances_ for every point of the source cloud.
+void Mapper3D::estimate_point_cloud_covariances(small_gicp::PointCloudProxy<pcl::PointXYZ>& source) {
+    // Fills point_cloud_covariances_ for every point of the source cloud.
 
     small_gicp::KdTreeBuilderOMP builder(registration_num_threads_);
     small_gicp::UnsafeKdTree<small_gicp::PointCloudProxy<pcl::PointXYZ>> tree(source, builder);
@@ -238,6 +288,98 @@ bool Mapper3D::use_wide_correspondence_search(const double dt) const {
     }
 
     return false;
+}
+
+small_gicp::GaussianVoxelMap::Ptr Mapper3D::make_local_map() const {
+    auto local_map = std::make_shared<small_gicp::GaussianVoxelMap>(local_map_voxel_size_);
+    local_map->lru_horizon = lru_horizon_;
+    local_map->lru_clear_cycle = lru_clear_cycle_;
+    return local_map;
+}
+
+void Mapper3D::reset_local_map(const Sophus::SE3d& pose, const small_gicp::PointCloudProxy<pcl::PointXYZ>& source) {
+    // GaussianVoxelMap has no clear(), so the whole object is replaced.
+    local_map_ = make_local_map();
+    local_map_->insert(source, utils::sophus_to_isometry(pose));
+
+    // A rebuilt map is as unproven as the first one, so open the wide search window again.
+    scans_since_map_reset_ = 0;
+}
+
+std::optional<Sophus::SE3d> Mapper3D::global_registration_pose(const Sophus::SE3d& prev_pose,
+                                                               const pcl::PointCloud<pcl::PointXYZ>::Ptr& point_cloud,
+                                                               const double dt) {
+    Timer timer(__func__, LogLevel::InfoImportant);
+
+    if (prev_downsampled_point_cloud_->empty()) {
+        Logger::warn("Global registration: there is no previous point cloud to register against.");
+        return std::nullopt;
+    }
+
+    const auto solution = global_registration_.estimate(utils::point_cloud_to_vec(point_cloud),
+                                                        utils::point_cloud_to_vec(prev_downsampled_point_cloud_));
+    if (!solution.valid) {
+        Logger::warn("Global registration: no valid solution.");
+        return std::nullopt;
+    }
+
+    const Sophus::SE3d pose_increment(solution.rotation, solution.translation);
+
+    // Throw out grossly incorrect answers a global solver can return.
+    const double motion = pose_increment.translation().norm();
+    const double motion_limit = max_plausible_sensor_speed_ * dt;
+    if (motion > motion_limit) {
+        Logger::warn("Global registration: the solution implies " + std::to_string(motion) + " m of movement over " +
+                     std::to_string(dt) + " s, over the " + std::to_string(motion_limit) + " m limit. Rejected.");
+        return std::nullopt;
+    }
+
+    return prev_pose * pose_increment;
+}
+
+std::optional<Sophus::SE3d> Mapper3D::recover_with_global_registration(
+    const Sophus::SE3d& prev_pose, const pcl::PointCloud<pcl::PointXYZ>::Ptr& point_cloud,
+    const small_gicp::PointCloudProxy<pcl::PointXYZ>& source, const double dt) {
+    Timer timer(__func__, LogLevel::InfoImportant);
+
+    Logger::info_important("Local registration failed " + std::to_string(consecutive_registration_failures_) +
+                           " times in a row. Trying global registration against the previous point cloud.");
+
+    const std::optional<Sophus::SE3d> recovered_sensor_pose = global_registration_pose(prev_pose, point_cloud, dt);
+    if (!recovered_sensor_pose.has_value()) {
+        return std::nullopt;
+    }
+
+    // First choice: perform local registration against the existing local map again, using the pose obtained from
+    // global registration as the initial guess pose. If this passes, the local map is kept.
+    const small_gicp::RegistrationResult registration_result =
+        align_to_local_map(source, recovered_sensor_pose.value(), dt);
+
+    if (registration_is_acceptable(registration_result, point_cloud->size())) {
+        relocalization_count_++;
+
+        Logger::info_important(
+            "Re-registration against local map using initial pose from global registration passed. Keeping the local "
+            "map (kept " +
+            std::to_string(relocalization_count_) + " times this run).");
+
+        consecutive_registration_failures_ = 0;
+
+        const Sophus::SE3d sensor_pose = utils::eigen_to_sophus(registration_result.T_target_source.matrix());
+        local_map_->insert(source, utils::sophus_to_isometry(sensor_pose));
+        return sensor_pose;
+    }
+
+    Logger::warn(
+        "Re-registration against local map using initial pose from global registration failed. Rebuilding the "
+        "local map from this point cloud.");
+
+    // Second choice: rebuild the local map from this point cloud, placed at the global registration pose.
+    reset_local_map(recovered_sensor_pose.value(), source);
+    consecutive_registration_failures_ = 0;
+    map_reset_count_++;
+
+    return recovered_sensor_pose.value();
 }
 
 pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::filter_point_cloud(
@@ -309,6 +451,32 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::remove_points_near_sensor(const pc
     filtered_cloud->is_dense = false;
 
     return filtered_cloud;
+}
+
+bool Mapper3D::registration_is_acceptable(const small_gicp::RegistrationResult& result, const size_t num_points) const {
+    // No points, or no matches at all, is a failure.
+    if (num_points == 0 || result.num_inliers == 0) {
+        return false;
+    }
+
+    if (inlier_ratio(result, num_points) >= min_inlier_ratio_ && error_per_inlier(result) <= max_error_per_inlier_) {
+        return true;
+    }
+    return false;
+}
+
+double Mapper3D::inlier_ratio(const small_gicp::RegistrationResult& result, const size_t num_points) const {
+    if (num_points == 0) {
+        return 0.0;
+    }
+    return static_cast<double>(result.num_inliers) / static_cast<double>(num_points);
+}
+
+double Mapper3D::error_per_inlier(const small_gicp::RegistrationResult& result) const {
+    if (result.num_inliers == 0) {
+        return 0.0;
+    }
+    return result.error / static_cast<double>(result.num_inliers);
 }
 
 Sophus::SE3d Mapper3D::sensor_pose_odom_frame() const { return sensor_pose_odom_frame_; }

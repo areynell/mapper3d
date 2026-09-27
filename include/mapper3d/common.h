@@ -31,7 +31,7 @@ struct Frame {
     double timestamp;
     Sophus::SE3d pose;
     pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud;  // Full resolution point cloud
-    // TODO: Rempve downsampled_point_cloud_ from Frame and let the user downsample it if needed.
+    // TODO: Remove downsampled_point_cloud from Frame and let the user downsample it if needed.
     pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_point_cloud;
     Eigen::Matrix<double, 6, 6> odometry_covariance;
 
@@ -69,7 +69,7 @@ struct Submap {
 
     Sophus::SE3d origin_pose;
     pcl::PointCloud<pcl::PointXYZ>::Ptr accumulated_point_cloud;
-    // TODO: Remove downsampled_point_cloud_ from Frame and let the user downsample it if needed.
+    // TODO: Remove downsampled_point_cloud from Submap and let the user downsample it if needed.
     pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_point_cloud;
     std::vector<Eigen::Vector3f> downsampled_point_cloud_vec;  // Only need this because of KISS-Matcher and small_gicp
 

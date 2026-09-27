@@ -9,7 +9,9 @@
 #include <pcl/visualization/pcl_visualizer.h>
 
 #include <fstream>
+#include <kiss_matcher/KISSMatcher.hpp>
 #include <memory>
+#include <optional>
 #include <small_gicp/ann/gaussian_voxelmap.hpp>
 #include <small_gicp/pcl/pcl_point.hpp>
 #include <small_gicp/pcl/pcl_point_traits.hpp>
@@ -35,6 +37,17 @@ struct LocalRegistrationParams {
     // insertions is deleted, and the delete pass runs every lru_clear_cycle.
     size_t lru_horizon = 100;
     size_t lru_clear_cycle = 10;
+
+    double min_inlier_ratio = 0.70;      // result.num_inliers / points in the scan (healthy: 0.85 to 1.0)
+    double max_error_per_inlier = 0.60;  // result.error / result.num_inliers (healthy: 0.06 to 0.30)
+
+    // Failures in a row before the global registration runs. Coasting never updates the local map, so it
+    // cannot recover on its own.
+    size_t max_consecutive_failures = 3;
+
+    // A global registration answer faster than this is rejected. A speed, not a distance, so the limit grows
+    // with the gap between scans.
+    double max_plausible_sensor_speed = 50.0;  // (m/s), about 180 km/h
 };
 
 struct Mapper3DParams {
@@ -98,12 +111,24 @@ class Mapper3D {
     Sophus::SE3d predict_sensor_pose(const Sophus::SE3d &pose, const Sophus::SE3d::Tangent &twist,
                                      const double dt) const;
 
-    void estimate_scan_covariances(small_gicp::PointCloudProxy<pcl::PointXYZ> &source);
+    void estimate_point_cloud_covariances(small_gicp::PointCloudProxy<pcl::PointXYZ> &source);
 
     small_gicp::RegistrationResult align_to_local_map(const small_gicp::PointCloudProxy<pcl::PointXYZ> &source,
                                                       const Sophus::SE3d &initial_guess, const double dt) const;
 
     bool use_wide_correspondence_search(const double dt) const;
+
+    small_gicp::GaussianVoxelMap::Ptr make_local_map() const;
+
+    void reset_local_map(const Sophus::SE3d &pose, const small_gicp::PointCloudProxy<pcl::PointXYZ> &source);
+
+    std::optional<Sophus::SE3d> global_registration_pose(const Sophus::SE3d &prev_pose,
+                                                         const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
+                                                         const double dt);
+
+    std::optional<Sophus::SE3d> recover_with_global_registration(
+        const Sophus::SE3d &prev_pose, const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
+        const small_gicp::PointCloudProxy<pcl::PointXYZ> &source, const double dt);
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr filter_point_cloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud);
 
@@ -113,20 +138,44 @@ class Mapper3D {
     pcl::PointCloud<pcl::PointXYZ>::Ptr remove_points_near_sensor(const pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
                                                                   const double min_distance);
 
+    bool registration_is_acceptable(const small_gicp::RegistrationResult &result, const size_t num_points) const;
+
+    double inlier_ratio(const small_gicp::RegistrationResult &result, const size_t num_points) const;
+
+    double error_per_inlier(const small_gicp::RegistrationResult &result) const;
+
     double z_height_threshold_;
     double min_sensor_distance_;
     pcl::VoxelGrid<pcl::PointXYZ> voxel_grid_;
 
     small_gicp::GaussianVoxelMap::Ptr local_map_;
 
-    // Per-point covariances of the current scan.
-    std::vector<Eigen::Matrix4d> scan_covariances_;
+    double local_map_voxel_size_;
+    size_t lru_horizon_;
+    size_t lru_clear_cycle_;
+
+    kiss_matcher::KISSMatcherConfig global_registration_config_;
+    kiss_matcher::KISSMatcher global_registration_;
+
+    std::vector<Eigen::Matrix4d> point_cloud_covariances_;
     int registration_num_threads_;
     int num_neighbors_for_covariance_;
     size_t wide_search_scans_after_reset_;
     size_t scans_since_map_reset_;
     double dropped_scan_interval_;
 
+    double min_inlier_ratio_;
+    double max_error_per_inlier_;
+    size_t consecutive_registration_failures_;
+    size_t max_consecutive_registration_failures_;
+    double max_plausible_sensor_speed_;
+
+    size_t registration_failure_count_;
+    size_t coasted_scan_count_;
+    size_t relocalization_count_;
+    size_t map_reset_count_;
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr prev_downsampled_point_cloud_;
     pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_point_cloud_;
 
     Sophus::SE3d prev_sensor_pose_odom_frame_;

@@ -123,7 +123,7 @@ void Mapper3DNode::visualization_thread_func() {
     while (true) {
         {
             std::unique_lock<std::mutex> lock(visualization_mutex_);
-            visualization_cv_.wait(lock, [this]() { return !run_visualization_thread_ || new_data_available_; });
+            visualization_cv_.wait(lock, [this] { return !run_visualization_thread_ || new_data_available_; });
 
             if (!run_visualization_thread_) {
                 break;

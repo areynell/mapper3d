@@ -174,6 +174,7 @@ install(TARGETS
 
 # Install python scripts as package executables (ros2 run mapper3d <script>.py)
 install(PROGRAMS
+  scripts/check_pose_graph.py
   scripts/kitti_gt_to_tum.py
   scripts/regression_test.py
   DESTINATION lib/${PROJECT_NAME}

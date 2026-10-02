@@ -48,6 +48,25 @@ def read_poses(poses_path):
     return poses
 
 
+def read_ground_truth(gt_path, sequence_dir, camera_frame=False):
+    """Return the ground-truth poses as an (N, 4, 4) array, and their timestamps from times.txt.
+
+    Line i of the poses file takes the timestamp on line i of times.txt. The poses are moved into the
+    velodyne frame (G_velo = Tr^-1 @ G_cam @ Tr) unless camera_frame is set.
+    """
+    poses = read_poses(gt_path)
+    times_path = sequence_dir / "times.txt"
+    times = np.atleast_1d(np.loadtxt(times_path))
+    if poses.shape[0] != times.size:
+        raise ValueError(f"{gt_path} has {poses.shape[0]} poses but {times_path} has {times.size} "
+                         f"timestamps - are they the same sequence?")
+
+    if not camera_frame:
+        tr = read_calib_tr(sequence_dir / "calib.txt")
+        poses = np.linalg.inv(tr) @ poses @ tr
+    return poses, times
+
+
 def rotation_to_quaternion(rotation):
     """Convert a 3x3 rotation matrix to [x, y, z, w] using Shepperd's method.
 
@@ -109,16 +128,10 @@ def main():
         if not path.is_file():
             sys.exit(f"error: {path} not found")
 
-    poses = read_poses(args.gt)
-    times = np.atleast_1d(np.loadtxt(times_path))
-
-    if poses.shape[0] != times.size:
-        sys.exit(f"error: {args.gt} has {poses.shape[0]} poses but {times_path} has {times.size} "
-                 f"timestamps - are they the same sequence?")
-
-    if not args.camera_frame:
-        tr = read_calib_tr(calib_path)
-        poses = np.linalg.inv(tr) @ poses @ tr
+    try:
+        poses, times = read_ground_truth(args.gt, args.sequence_dir, args.camera_frame)
+    except ValueError as error:
+        sys.exit(f"error: {error}")
 
     frame = "left camera" if args.camera_frame else "velodyne"
     with args.output.open("w") as out:

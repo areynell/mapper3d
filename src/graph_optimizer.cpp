@@ -169,12 +169,15 @@ void GraphOptimizer::process_frames() {
             optimize();
         }
 
-        // Shutdown: no frames remain in the queue. Optimize once more if loop closures were added
-        // since the last optimization, write the final results to disk, then exit. The check
-        // sits after the frame is processed, so that a frame popped in this iteration is never
-        // discarded.
+        // Shutdown: no frames remain in the queue. Optimize once more, write the final results to disk,
+        // then exit. The check sits after the frame is processed, so that a frame popped in this
+        // iteration is never discarded.
         if (stop_requested && queue_empty) {
-            if (num_new_loop_closures_ > 0) {
+            // Optimize again if keyframes were added since the last optimization, so save_results() writes
+            // every keyframe and not just those up to the last mid-run optimization. A new loop closure is
+            // always added with a new keyframe, so this covers new loop closures too.
+            const bool keyframes_added_since_optimization = optimized_estimates_.size() < current_keyframe_index_;
+            if (num_loop_closures_ > 0 && keyframes_added_since_optimization) {
                 optimize();
             }
             save_results();

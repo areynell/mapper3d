@@ -30,6 +30,12 @@ struct GraphOptimizerParams {
     // gtsam::GncLossType loss_type = gtsam::GncLossType::TLS;
     double map_voxel_size = 0.5;  // Voxel resolution of the accumulated map (m)
 
+    // Sigmas of the prior on the first keyframe's pose. Its only job is to fix the map frame to the first keyframe. Its
+    // values therefore do not change the answer, only conditioning, but they must stay far tighter than any
+    // measurement.
+    double prior_rotation_sigma = 1.0e-4;     // (rad)
+    double prior_translation_sigma = 1.0e-4;  // (m)
+
     // Keyframe trajectories written to disk in the TUM format at shutdown for offline evaluation with evo.
     std::string unoptimized_trajectory_file = "unoptimized_keyframes_tum.txt";
     std::string optimized_trajectory_file = "optimized_keyframes_tum.txt";
@@ -74,12 +80,16 @@ class GraphOptimizer {
 
    private:
     void add_odometry_constraint(const Sophus::SE3d& pose, const double timestamp,
-                                 const Eigen::Matrix<double, 6, 6>& odometry_covariance);
+                                 const Eigen::Matrix<double, 6, 6>& odometry_covariance, const bool odometry_degraded);
 
     void add_loop_closure_constraint(size_t prev_keyframe_id, size_t keyframe_id, const Sophus::SE3d& relative_pose,
                                      const Eigen::Matrix<double, 6, 6>& loop_closure_covariance);
 
     void optimize();
+
+    void log_rejected_factors(const gtsam::Vector& factor_weights) const;
+
+    std::string describe_edge(const size_t factor_index) const;
 
     void save_results();
 
@@ -107,6 +117,7 @@ class GraphOptimizer {
 
     gtsam::LevenbergMarquardtParams lm_params_;
     gtsam::GncParams<gtsam::LevenbergMarquardtParams> gnc_params_;
+    gtsam::SharedNoiseModel prior_noise_model_;
 
     // Must stay in lockstep with Mapper3D::keyframe_id_, because Frame::keyframe_id is looked up as
     // gtsam::Symbol('x', id) in update_frame_poses() and in every loop-closure edge.
@@ -123,6 +134,12 @@ class GraphOptimizer {
     gtsam::Values online_estimates_;
     // Scan timestamp of each keyframe, which makes the saved trajectories matchable to ground truth.
     std::vector<double> keyframe_timestamps_;
+    // Position in graph_ of every factor, recorded as it is added, in three lists. GNC is told by position which
+    // factors it must keep: the known inliers, which are the prior and every odometry edge that is not degraded. It
+    // may reject degraded odometry edges and loop closures.
+    gtsam::GncParams<gtsam::LevenbergMarquardtParams>::IndexVector known_inlier_factors_;
+    std::vector<size_t> degraded_odometry_factors_;
+    std::vector<size_t> loop_closure_factors_;
     bool incremental_optimization_;
 
     bool stop_processing_frames_;

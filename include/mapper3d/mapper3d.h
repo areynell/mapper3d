@@ -188,6 +188,9 @@ class Mapper3D {
     double keyframe_distance_threshold_;
     double keyframe_rotation_threshold_;
     Sophus::SE3d latest_keyframe_pose_odom_frame_;
+    // Set when a point cloud fails registration or arrives after dropped scans, and reset when a keyframe is added.
+    // So it says whether anything went wrong between the previous keyframe and the next one.
+    bool keyframe_edge_degraded_;
 
     Eigen::Matrix<double, 6, 6> odometry_covariance_;
 

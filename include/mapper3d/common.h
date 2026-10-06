@@ -34,6 +34,9 @@ struct Frame {
     // TODO: Remove downsampled_point_cloud from Frame and let the user downsample it if needed.
     pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_point_cloud;
     Eigen::Matrix<double, 6, 6> odometry_covariance;
+    // True when a point cloud since the previous keyframe failed registration or arrived after dropped scans. The
+    // odometry edge from the previous keyframe to this one is then left open to rejection by GNC.
+    bool odometry_degraded;
 
     Frame()
         : keyframe_id(0),
@@ -42,19 +45,21 @@ struct Frame {
           pose(Sophus::SE3d()),
           point_cloud(new pcl::PointCloud<pcl::PointXYZ>()),
           downsampled_point_cloud(new pcl::PointCloud<pcl::PointXYZ>()),
-          odometry_covariance(Eigen::Matrix<double, 6, 6>::Zero()) {}
+          odometry_covariance(Eigen::Matrix<double, 6, 6>::Zero()),
+          odometry_degraded(false) {}
 
     Frame(size_t keyframe_id, size_t point_cloud_id, double timestamp, const Sophus::SE3d &pose,
           const pcl::PointCloud<pcl::PointXYZ>::Ptr &point_cloud,
           const pcl::PointCloud<pcl::PointXYZ>::Ptr &downsampled_point_cloud,
-          const Eigen::Matrix<double, 6, 6> &odometry_covariance)
+          const Eigen::Matrix<double, 6, 6> &odometry_covariance, bool odometry_degraded)
         : keyframe_id(keyframe_id),
           point_cloud_id(point_cloud_id),
           timestamp(timestamp),
           pose(pose),
           point_cloud(point_cloud),
           downsampled_point_cloud(downsampled_point_cloud),
-          odometry_covariance(odometry_covariance) {}
+          odometry_covariance(odometry_covariance),
+          odometry_degraded(odometry_degraded) {}
 };
 
 struct Submap {

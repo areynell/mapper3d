@@ -40,6 +40,7 @@ Mapper3D::Mapper3D(const Mapper3DParams& params)
       keyframe_distance_threshold_(params.keyframe_distance_threshold),
       keyframe_rotation_threshold_(params.keyframe_rotation_threshold),
       latest_keyframe_pose_odom_frame_(Sophus::SE3d()),
+      keyframe_edge_degraded_(false),
       global_registration_config_(params.voxel_size),
       global_registration_(global_registration_config_),
       graph_optimizer_(params.graph_optimizer_params),
@@ -118,6 +119,11 @@ void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, 
 
     const double dt = prev_point_cloud_timestamp_ < 0.0 ? 0.0 : point_cloud_timestamp - prev_point_cloud_timestamp_;
 
+    // Scans were dropped, so the constant-velocity prediction had to bridge a longer gap than usual.
+    if (dt > dropped_scan_interval_) {
+        keyframe_edge_degraded_ = true;
+    }
+
     sensor_pose_odom_frame_ =
         estimate_lidar_odometry(prev_sensor_pose_odom_frame_, prev_twist_, downsampled_point_cloud_, dt);
 
@@ -125,11 +131,12 @@ void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, 
     if (should_add_keyframe(sensor_pose_odom_frame_)) {
         graph_optimizer_.add_frame(Frame(keyframe_id_, point_cloud_id_, point_cloud_timestamp, sensor_pose_odom_frame_,
                                          pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>()),
-                                         downsampled_point_cloud_, odometry_covariance_));
+                                         downsampled_point_cloud_, odometry_covariance_, keyframe_edge_degraded_));
 
         latest_keyframe_pose_odom_frame_ = sensor_pose_odom_frame_;
 
         keyframe_id_++;
+        keyframe_edge_degraded_ = false;
     }
 
     const Sophus::SE3d map_to_odom_transform = graph_optimizer_.map_to_odom_transform();
@@ -206,6 +213,11 @@ Sophus::SE3d Mapper3D::estimate_lidar_odometry(const Sophus::SE3d& prev_pose, co
         local_map_->insert(source, utils::sophus_to_isometry(sensor_pose));
         return sensor_pose;
     } else {
+        // Registration failed, so this point cloud's pose comes from a fallback below: the predicted pose or global
+        // registration. Neither is as reliable as a good registration, so mark the odometry edge that ends at the
+        // next keyframe as degraded. GNC is then allowed to reject that edge.
+        keyframe_edge_degraded_ = true;
+
         registration_failure_count_++;
         consecutive_registration_failures_++;
 

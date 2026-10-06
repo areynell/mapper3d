@@ -8,9 +8,11 @@
 #include <gtsam/slam/dataset.h>
 #include <pcl/io/ply_io.h>
 
+#include <exception>
 #include <fstream>
 #include <iomanip>
 #include <mutex>
+#include <string>
 
 #include "mapper3d/logging.h"
 #include "mapper3d/utils.h"
@@ -30,6 +32,12 @@ GraphOptimizer::GraphOptimizer(const GraphOptimizerParams& params)
     gnc_params_.setLossType(gtsam::GncLossType::TLS);
     // gnc_params_.setLossType(gtsam::GncLossType::GM);
     gnc_params_.setVerbosityGNC(gtsam::GncParams<gtsam::LevenbergMarquardtParams>::Verbosity::MU);
+
+    // gtsam::Pose3 orders its tangent space rotation FIRST, then translation.
+    gtsam::Vector6 prior_sigmas;
+    prior_sigmas << gtsam::Vector3::Constant(params.prior_rotation_sigma),
+        gtsam::Vector3::Constant(params.prior_translation_sigma);
+    prior_noise_model_ = gtsam::noiseModel::Diagonal::Sigmas(prior_sigmas);
 
     current_keyframe_index_ = 0;
     stop_processing_frames_ = false;
@@ -127,7 +135,7 @@ void GraphOptimizer::process_frames() {
         Timer timer(__func__, LogLevel::Debug);
 
         if (new_frame_available) {
-            add_odometry_constraint(frame.pose, frame.timestamp, frame.odometry_covariance);
+            add_odometry_constraint(frame.pose, frame.timestamp, frame.odometry_covariance, frame.odometry_degraded);
 
             const auto loop_closure = loop_closure_detector_.detect_loop_closures(frame);
             if (loop_closure) {
@@ -187,7 +195,8 @@ void GraphOptimizer::process_frames() {
 }
 
 void GraphOptimizer::add_odometry_constraint(const Sophus::SE3d& pose, const double timestamp,
-                                             const Eigen::Matrix<double, 6, 6>& odometry_covariance) {
+                                             const Eigen::Matrix<double, 6, 6>& odometry_covariance,
+                                             const bool odometry_degraded) {
     std::scoped_lock<std::mutex> lock(graph_mutex_);
 
     const gtsam::Symbol current_keyframe_symbol('x', current_keyframe_index_);
@@ -200,27 +209,37 @@ void GraphOptimizer::add_odometry_constraint(const Sophus::SE3d& pose, const dou
     // }
 
     const gtsam::Pose3 current_pose(gtsam::Rot3(pose.unit_quaternion()), gtsam::Point3(pose.translation()));
-    const auto odometry_noise_model = gtsam::noiseModel::Gaussian::Covariance(odometry_covariance);
 
     if (current_keyframe_index_ == 0) {
-        // // Add prior factor for the first pose in the graph
-        // const Eigen::Matrix<double, 6, 6> prior_covariance =
-        //     Eigen::Matrix<double, 6, 6>::Identity() * 1.0e-9;  // Very small values
-        // graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(current_keyframe_symbol, current_pose,
-        // prior_covariance);
-
+        // Add prior factor for the first pose in the graph
         graph_.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(current_keyframe_symbol, current_pose,
-                                                                odometry_noise_model);
+                                                                prior_noise_model_);
+        // GNC is told which factors to keep by their position in graph_.
+        const size_t factor_index = graph_.size() - 1;
+        known_inlier_factors_.push_back(factor_index);
     } else {
         const gtsam::Symbol prev_keyframe_symbol('x', current_keyframe_index_ - 1);
 
         // Relative pose between previous pose and current pose
         const gtsam::Pose3 prev_pose = unoptimized_estimates_.at<gtsam::Pose3>(prev_keyframe_symbol);
         const gtsam::Pose3 odometry_relative_pose = prev_pose.inverse() * current_pose;
+        const auto odometry_noise_model = gtsam::noiseModel::Gaussian::Covariance(odometry_covariance);
 
         // Add odometry factor for subsequent poses
         graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(prev_keyframe_symbol, current_keyframe_symbol,
                                                                   odometry_relative_pose, odometry_noise_model);
+
+        // GNC must keep a normal odometry edge. A degraded one (registration failed or scans were dropped between its
+        // keyframes) may be wrong where a loop closure is right, so GNC is allowed to reject it.
+        const size_t factor_index = graph_.size() - 1;
+        if (odometry_degraded) {
+            degraded_odometry_factors_.push_back(factor_index);
+            Logger::warn("Odometry edge " + prev_keyframe_symbol.string() + " -> " + current_keyframe_symbol.string() +
+                         " is degraded: registration failed or scans were dropped since the previous keyframe. GNC "
+                         "may reject it.");
+        } else {
+            known_inlier_factors_.push_back(factor_index);
+        }
     }
     unoptimized_estimates_.insert(current_keyframe_symbol, current_pose);
 
@@ -248,9 +267,11 @@ void GraphOptimizer::add_loop_closure_constraint(size_t prev_keyframe_id, size_t
                                                   gtsam::Point3(relative_pose.translation()));
     const auto loop_closure_noise_model = gtsam::noiseModel::Gaussian::Covariance(loop_closure_covariance);
 
-    // Add the loop closure factor
+    // Add loop closure factor. GNC may reject it, so it is not a known inlier.
     graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(prev_keyframe_symbol, current_keyframe_symbol,
                                                               loop_closure_relative_pose, loop_closure_noise_model);
+    const size_t factor_index = graph_.size() - 1;
+    loop_closure_factors_.push_back(factor_index);
 
     // // Used for visualization
     // loop_closure_edges_.emplace_back(prev_keyframe_id, keyframe_id);
@@ -264,13 +285,32 @@ void GraphOptimizer::optimize() {
 
     Logger::info_important("Optimizing pose graph...");
 
+    // IMPORTANT: Use a copy of gnc_params_. setKnownInliers() appends rather than replaces, so calling it on
+    // gnc_params_ would pile up duplicate indices with every optimization.
+    gtsam::GncParams<gtsam::LevenbergMarquardtParams> gnc_params = gnc_params_;
+    gnc_params.setKnownInliers(known_inlier_factors_);
+
     // IMPORTANT: The solve runs unlocked, so a long optimization never blocks the reader threads. This is
     // safe because the frame-processing thread is the sole writer of graph_ and the estimates.
     // gtsam::GncOptimizer<gtsam::GncParams<gtsam::LevenbergMarquardtParams>> optimizer(graph_, initial_estimates_);
-    gtsam::GncOptimizer<gtsam::GncParams<gtsam::LevenbergMarquardtParams>> optimizer(graph_, unoptimized_estimates_,
-                                                                                     gnc_params_);
+    gtsam::Values optimized_estimates;
+    gtsam::Vector factor_weights;
+    try {
+        gtsam::GncOptimizer<gtsam::GncParams<gtsam::LevenbergMarquardtParams>> optimizer(graph_, unoptimized_estimates_,
+                                                                                         gnc_params);
+        optimized_estimates = optimizer.optimize();
+        factor_weights = optimizer.getWeights();
+    } catch (const std::exception& e) {
+        Logger::error("GNC threw an exception, keeping the previous estimates: " + std::string(e.what()));
 
-    gtsam::Values optimized_estimates = optimizer.optimize();
+        // Reset as a successful optimization would, so the triggers in process_frames() do not retry straight away.
+        num_new_loop_closures_ = 0;
+        latest_optimization_time_ = std::chrono::steady_clock::now();
+        return;
+    }
+
+    log_rejected_factors(factor_weights);
+
     {
         // gtsam::Values has no move assignment, so swap the result in rather than copy it, and let the
         // previous one die with the local once the lock is released.
@@ -296,6 +336,38 @@ void GraphOptimizer::optimize() {
 
     num_new_loop_closures_ = 0;                                    // Reset the counter after optimization
     latest_optimization_time_ = std::chrono::steady_clock::now();  // Update the time of the latest optimization
+}
+
+void GraphOptimizer::log_rejected_factors(const gtsam::Vector& factor_weights) const {
+    // GNC's TLS loss drives the weight of each loop closure and degraded odometry edge towards 0 or 1. We count a
+    // weight below 0.5 as rejected.
+    size_t num_rejected_loop_closures = 0;
+    for (const size_t factor_index : loop_closure_factors_) {
+        if (factor_weights(factor_index) < 0.5) {
+            num_rejected_loop_closures++;
+            Logger::info("GNC rejected the loop closure " + describe_edge(factor_index) + ".");
+        }
+    }
+
+    size_t num_rejected_degraded_edges = 0;
+    for (const size_t factor_index : degraded_odometry_factors_) {
+        if (factor_weights(factor_index) < 0.5) {
+            num_rejected_degraded_edges++;
+            Logger::warn("GNC rejected the degraded odometry edge " + describe_edge(factor_index) + ".");
+        }
+    }
+
+    Logger::info_important("GNC rejected " + std::to_string(num_rejected_loop_closures) + " of " +
+                           std::to_string(loop_closure_factors_.size()) + " loop closures and " +
+                           std::to_string(num_rejected_degraded_edges) + " of " +
+                           std::to_string(degraded_odometry_factors_.size()) +
+                           " degraded odometry edges, and kept all " + std::to_string(known_inlier_factors_.size()) +
+                           " known inliers (the prior and the other odometry edges).");
+}
+
+std::string GraphOptimizer::describe_edge(const size_t factor_index) const {
+    const gtsam::KeyVector& keys = graph_.at(factor_index)->keys();
+    return gtsam::Symbol(keys.front()).string() + " -> " + gtsam::Symbol(keys.back()).string();
 }
 
 void GraphOptimizer::save_results() {

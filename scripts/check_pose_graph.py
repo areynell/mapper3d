@@ -7,12 +7,17 @@ in the ground truth by its timestamp, and prints:
 
   * Odometry edges: how far each keyframe-to-keyframe edge is from the ground truth, per axis.
     Set the odometry sigmas from these numbers.
-  * Loop closures: how far each loop closure is from the ground truth. A loop closure whose two keyframes are
-    more than --false-loop-closure-distance metres apart in the ground truth is counted as false.
+  * Loop closures: how far each loop closure is from the ground truth, split into loop closures close to
+    the ground truth and far from it (see below).
   * Edges over the GNC limit: every edge whose residual in the optimized graph is above the limit
     past which GNC's TLS loss gives an edge zero weight. GNC's weights are not saved, so this is
     how the script judges which edges GNC rejected.
   * Keyframe APE of the unoptimized and optimized keyframe trajectories, split into xy and z.
+
+Close and far: KITTI does not say which loop closures are right. Its ground truth is one GPS/IMU pose per
+scan. So the script compares a loop closure's measured relative pose with the relative pose of its two
+keyframes in the ground truth, and counts it as far from the ground truth when the translation error is
+over --far-translation-error or the rotation error is over --far-rotation-error.
 
 Needs evo (pip install evo), as regression_test.py does.
 
@@ -85,6 +90,25 @@ class CheckedEdge:
     # Squared whitened residual at the optimized poses, the number GNC compares with GNC_CHI2_LIMIT.
     # None when there is no optimized graph, or when it lacks either keyframe.
     chi2: float | None
+
+
+@dataclass
+class FarFromGroundTruthLimits:
+    """The errors past which a loop closure counts as far from the ground truth."""
+
+    # Limit on the translation error's magnitude (m).
+    translation_error: float
+    # Limit on the rotation error's angle (degrees).
+    rotation_error_deg: float
+
+    def is_far(self, translation_error_magnitude, rotation_error_magnitude_deg):
+        """Return True when either error is over its limit."""
+        return (translation_error_magnitude > self.translation_error
+                or rotation_error_magnitude_deg > self.rotation_error_deg)
+
+    def describe(self):
+        """Return the limits as text, to print next to the counts they give."""
+        return f"error > {self.translation_error:g} m or > {self.rotation_error_deg:g} deg"
 
 
 def pose_from_values(values):
@@ -400,78 +424,78 @@ def print_odometry_edges(odometry_edges):
           f"{format_p50_p95_max(rotation_error_magnitudes_deg)} deg")
 
 
-def print_loop_closures(loop_closure_edges, true_loop_closures, false_loop_closures,
-                        false_loop_closure_distance, all_loop_closures):
-    """Print how far the loop closures are from the ground truth, and list the false ones.
+def print_loop_closures(loop_closure_edges, close_loop_closures, far_loop_closures, far_limits,
+                        all_loop_closures):
+    """Print how far the loop closures are from the ground truth, and list the ones far from it.
 
-    loop_closure_edges holds every loop closure, in graph order. true_loop_closures and
-    false_loop_closures are the same loop closures, split by whether their ground-truth distance is over
-    false_loop_closure_distance. all_loop_closures lists the true loop closures as well.
+    loop_closure_edges holds every loop closure, in graph order. close_loop_closures and far_loop_closures
+    are the same loop closures, split by far_limits, a FarFromGroundTruthLimits. all_loop_closures lists the
+    close loop closures as well.
     """
     print(f"   loop closures {len(loop_closure_edges)}, "
-          f"false (GT distance > {false_loop_closure_distance:g} m) {len(false_loop_closures)}")
+          f"far from GT ({far_limits.describe()}) {len(far_loop_closures)}")
     if len(loop_closure_edges) > 0:
         print_sigmas_in_graph(loop_closure_edges)
 
-    if len(true_loop_closures) > 0:
+    if len(close_loop_closures) > 0:
         ground_truth_distances = []
         measured_distances = []
         translation_error_magnitudes_xy = []
         translation_error_magnitudes_z = []
         rotation_error_magnitudes_deg = []
-        for edge in true_loop_closures:
+        for edge in close_loop_closures:
             ground_truth_distances.append(edge.ground_truth_distance)
             measured_distances.append(edge.measured_distance)
             translation_error_magnitudes_xy.append(edge.translation_error_magnitude_xy)
             translation_error_magnitudes_z.append(edge.translation_error_magnitude_z)
             rotation_error_magnitudes_deg.append(edge.rotation_error_magnitude_deg)
-        print(f"     true loop closures, p50/p95/max: "
+        print(f"     close loop closures, p50/p95/max: "
               f"GT distance {format_p50_p95_max(ground_truth_distances)} m, "
               f"measured {format_p50_p95_max(measured_distances)} m")
         print(f"       error xy {format_p50_p95_max(translation_error_magnitudes_xy)} m, "
               f"z {format_p50_p95_max(translation_error_magnitudes_z)} m, "
               f"rotation {format_p50_p95_max(rotation_error_magnitudes_deg)} deg")
 
-    for edge in false_loop_closures:
-        print(f"     false  {describe_edge(edge)}")
+    for edge in far_loop_closures:
+        print(f"     far    {describe_edge(edge)}")
     if all_loop_closures:
-        for edge in true_loop_closures:
-            print(f"     true   {describe_edge(edge)}")
+        for edge in close_loop_closures:
+            print(f"     close  {describe_edge(edge)}")
 
 
-def print_edges_over_gnc_limit(odometry_edges, true_loop_closures, false_loop_closures):
+def print_edges_over_gnc_limit(odometry_edges, close_loop_closures, far_loop_closures):
     """Print the edges that GNC rejected, judged by their chi2 in the optimized graph.
 
-    Also lists the false loop closures that GNC kept.
+    Also lists the loop closures far from the ground truth that GNC kept.
     """
     rejected_odometry_edges = []
     for edge in odometry_edges:
         if is_over_gnc_limit(edge):
             rejected_odometry_edges.append(edge)
 
-    rejected_true_loop_closures = []
-    for edge in true_loop_closures:
+    rejected_close_loop_closures = []
+    for edge in close_loop_closures:
         if is_over_gnc_limit(edge):
-            rejected_true_loop_closures.append(edge)
+            rejected_close_loop_closures.append(edge)
 
     # A loop closure with no chi2 goes in neither list.
-    rejected_false_loop_closures = []
-    kept_false_loop_closures = []
-    for edge in false_loop_closures:
+    rejected_far_loop_closures = []
+    kept_far_loop_closures = []
+    for edge in far_loop_closures:
         if is_over_gnc_limit(edge):
-            rejected_false_loop_closures.append(edge)
+            rejected_far_loop_closures.append(edge)
         elif is_within_gnc_limit(edge):
-            kept_false_loop_closures.append(edge)
+            kept_far_loop_closures.append(edge)
 
     print(f"   over the GNC limit (chi2 > {GNC_CHI2_LIMIT}): odometry edges {len(rejected_odometry_edges)}, "
-          f"true loop closures {len(rejected_true_loop_closures)} of {len(true_loop_closures)}, "
-          f"false loop closures {len(rejected_false_loop_closures)} of {len(false_loop_closures)}")
+          f"close loop closures {len(rejected_close_loop_closures)} of {len(close_loop_closures)}, "
+          f"far loop closures {len(rejected_far_loop_closures)} of {len(far_loop_closures)}")
     for edge in rejected_odometry_edges:
         print(f"     odometry  {describe_edge(edge)}")
-    for edge in rejected_true_loop_closures:
-        print(f"     true loop closure rejected  {describe_edge(edge)}")
-    for edge in kept_false_loop_closures:
-        print(f"     false loop closure kept  {describe_edge(edge)}")
+    for edge in rejected_close_loop_closures:
+        print(f"     close loop closure rejected  {describe_edge(edge)}")
+    for edge in kept_far_loop_closures:
+        print(f"     far loop closure kept  {describe_edge(edge)}")
 
 
 def print_keyframe_ape(run_dir, ground_truth_poses, ground_truth_times):
@@ -486,7 +510,7 @@ def print_keyframe_ape(run_dir, ground_truth_poses, ground_truth_times):
             print(f"     {trajectory_name:<30} not found")
 
 
-def check_run(run_dir, sequence, dataset_root, false_loop_closure_distance, all_loop_closures):
+def check_run(run_dir, sequence, dataset_root, far_limits, all_loop_closures):
     """Check the pose graph of one sequence directory of a run against the ground truth, and print it."""
     ground_truth_path = dataset_root / "original" / "poses" / f"{sequence}.txt"
     sequence_dir = dataset_root / "original" / "sequences" / sequence
@@ -547,19 +571,19 @@ def check_run(run_dir, sequence, dataset_root, false_loop_closure_distance, all_
         else:
             loop_closure_edges.append(checked_edge)
 
-    true_loop_closures = []
-    false_loop_closures = []
+    close_loop_closures = []
+    far_loop_closures = []
     for edge in loop_closure_edges:
-        if edge.ground_truth_distance > false_loop_closure_distance:
-            false_loop_closures.append(edge)
+        if far_limits.is_far(edge.translation_error_magnitude, edge.rotation_error_magnitude_deg):
+            far_loop_closures.append(edge)
         else:
-            true_loop_closures.append(edge)
+            close_loop_closures.append(edge)
 
     print_odometry_edges(odometry_edges)
-    print_loop_closures(loop_closure_edges, true_loop_closures, false_loop_closures,
-                        false_loop_closure_distance, all_loop_closures)
+    print_loop_closures(loop_closure_edges, close_loop_closures, far_loop_closures, far_limits,
+                        all_loop_closures)
     if optimized_poses is not None:
-        print_edges_over_gnc_limit(odometry_edges, true_loop_closures, false_loop_closures)
+        print_edges_over_gnc_limit(odometry_edges, close_loop_closures, far_loop_closures)
     print_keyframe_ape(run_dir, ground_truth_poses, ground_truth_times)
 
 
@@ -573,18 +597,23 @@ def main():
     parser.add_argument("--dataset-root", type=pathlib.Path,
                         default=pathlib.Path.home() / "projects" / "datasets" / "kitti",
                         help="KITTI dataset root, holding original/poses and original/sequences")
-    parser.add_argument("--false-loop-closure-distance", type=float, default=10.0,
-                        help="count a loop closure as false when its keyframes are further apart than this "
-                             "in the ground truth (m, default: 10)")
+    parser.add_argument("--far-translation-error", type=float, default=8.0,
+                        help="count a loop closure as far from the ground truth when its translation error "
+                             "is over this (m, default: 8)")
+    parser.add_argument("--far-rotation-error", type=float, default=3.0,
+                        help="count a loop closure as far from the ground truth when its rotation error is "
+                             "over this (degrees, default: 3)")
     parser.add_argument("--all-loop-closures", action="store_true",
-                        help="print every loop closure, not only the false ones")
+                        help="print every loop closure, not only the ones far from the ground truth")
     args = parser.parse_args()
+    far_limits = FarFromGroundTruthLimits(translation_error=args.far_translation_error,
+                                          rotation_error_deg=args.far_rotation_error)
 
     for run_dir in args.run_dirs:
         if not run_dir.is_dir():
             print(f"== {run_dir}: not a directory, skipped")
             continue
-        check_run(run_dir, args.sequence or run_dir.name, args.dataset_root, args.false_loop_closure_distance,
+        check_run(run_dir, args.sequence or run_dir.name, args.dataset_root, far_limits,
                   args.all_loop_closures)
 
 

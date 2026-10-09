@@ -6,7 +6,6 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <fstream>
-#include <small_gicp/registration/registration_helper.hpp>
 #include <sophus/se3.hpp>
 #include <string>
 #include <vector>
@@ -23,6 +22,12 @@ Eigen::Isometry3d sophus_to_isometry(const Sophus::SE3d& pose);
 
 double deg2rad(const double deg);
 double rad2deg(const double rad);
+
+// The share of the source cloud's points that registration matched. 0 when the cloud is empty.
+double inlier_ratio(const size_t num_inliers, const size_t num_points);
+
+// The registration error averaged over the matched points. Infinity when nothing matched.
+double error_per_inlier(const double error, const size_t num_inliers);
 
 // Trajectory output in the TUM format that evo consumes:
 // timestamp tx ty tz qx qy qz qw

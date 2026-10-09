@@ -140,10 +140,6 @@ class Mapper3D {
 
     bool registration_is_acceptable(const small_gicp::RegistrationResult &result, const size_t num_points) const;
 
-    double inlier_ratio(const small_gicp::RegistrationResult &result, const size_t num_points) const;
-
-    double error_per_inlier(const small_gicp::RegistrationResult &result) const;
-
     double z_height_threshold_;
     double min_sensor_distance_;
     pcl::VoxelGrid<pcl::PointXYZ> voxel_grid_;

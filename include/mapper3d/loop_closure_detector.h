@@ -1,3 +1,5 @@
+#pragma once
+
 #include <kiss_matcher/FasterPFH.hpp>
 #include <kiss_matcher/KISSMatcher.hpp>
 #include <optional>
@@ -20,6 +22,15 @@ struct LoopClosureDetectorParams {
 
     double position_uncertainty = 2.5;                      // Position uncertainty for loop closure detection (m)
     double orientation_uncertainty = utils::deg2rad(40.0);  // Orientation uncertainty for loop closure detection (rad)
+
+    // GICP (small_gicp) refines KISS-Matcher's answer. A point is used in the alignment process only when its nearest
+    // point in the other scan is closer than max_correspondence_distance.
+    double max_correspondence_distance = 1.0;  // About twice voxel_size (m)
+    int num_threads = 4;                       // Threads for GICP (small_gicp's default)
+
+    // A loop closure candidate is rejected unless it passes both.
+    size_t min_final_inliers = 8;    // KISS-Matcher's matched keypoints after its final step
+    double min_inlier_ratio = 0.70;  // GICP's num_inliers / points in the scan
 
     double x_loop_uncertainty = 0.05;                     // X position uncertainty for loop closures (m)
     double y_loop_uncertainty = 0.05;                     // Y position uncertainty for loop closures (m)
@@ -54,9 +65,9 @@ class LoopClosureDetector {
     std::optional<LoopClosure> detect_loop_closures(const Frame& frame);
 
    private:
-    Sophus::SE3d local_registration(const pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud,
-                                    const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
-                                    const Sophus::SE3d& initial_transform_guess);
+    small_gicp::RegistrationResult local_registration(const pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud,
+                                                      const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
+                                                      const Sophus::SE3d& initial_transform_guess);
 
     void update_submaps(const Frame& frame);
 
@@ -69,6 +80,9 @@ class LoopClosureDetector {
     kiss_matcher::KISSMatcherConfig global_registration_config_;
     kiss_matcher::KISSMatcher global_registration_;
     small_gicp::RegistrationPCL<pcl::PointXYZ, pcl::PointXYZ> local_registration_;
+
+    size_t min_final_inliers_;
+    double min_inlier_ratio_;
 
     Submap current_submap_;  // Current submap being built
     std::unordered_map<size_t, Submap> submaps_;

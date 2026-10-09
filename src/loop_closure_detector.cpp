@@ -18,7 +18,13 @@
 namespace mapper3d {
 
 LoopClosureDetector::LoopClosureDetector(const LoopClosureDetectorParams& params)
-    : global_registration_config_(params.voxel_size), global_registration_(global_registration_config_) {
+    : global_registration_config_(params.voxel_size),
+      global_registration_(global_registration_config_),
+      min_final_inliers_(params.min_final_inliers),
+      min_inlier_ratio_(params.min_inlier_ratio) {
+    local_registration_.setMaxCorrespondenceDistance(params.max_correspondence_distance);
+    local_registration_.setNumThreads(params.num_threads);
+
     // TODO: Use a more representative odometry pose uncertainty/covariance
     loop_closure_covariance_ = Eigen::Matrix<double, 6, 6>::Zero();
     loop_closure_covariance_.block<3, 3>(0, 0) = Eigen::DiagonalMatrix<double, 3>(
@@ -45,13 +51,33 @@ std::optional<LoopClosure> LoopClosureDetector::detect_loop_closures(const Frame
         return std::nullopt;  // No loop closure found
     }
 
+    const Frame& nearest_frame = frames_.at(nearest_keyframe_id);
+
     // TODO: Is it possible to call estimate directly on FasterPFH (keypoint, descriptor) pairs?
     const auto solution =
         global_registration_.estimate(utils::point_cloud_to_vec(frame.downsampled_point_cloud),
-                                      utils::point_cloud_to_vec(frames_[nearest_keyframe_id].downsampled_point_cloud));
+                                      utils::point_cloud_to_vec(nearest_frame.downsampled_point_cloud));
+    const size_t num_final_inliers = global_registration_.getNumFinalInliers();
+    if (num_final_inliers < min_final_inliers_) {
+        Logger::info("Rejected loop closure between keyframes " + std::to_string(nearest_keyframe_id) + " and " +
+                     std::to_string(frame.keyframe_id) + ": KISS-Matcher final inliers " +
+                     std::to_string(num_final_inliers) + " (min " + std::to_string(min_final_inliers_) + ")");
+        return std::nullopt;
+    }
+
     const Sophus::SE3d relative_pose(solution.rotation, solution.translation);
-    const Sophus::SE3d refined_relative_pose = local_registration(frames_[nearest_keyframe_id].downsampled_point_cloud,
-                                                                  frame.downsampled_point_cloud, relative_pose);
+    const small_gicp::RegistrationResult registration_result =
+        local_registration(nearest_frame.downsampled_point_cloud, frame.downsampled_point_cloud, relative_pose);
+    const double inlier_ratio =
+        utils::inlier_ratio(registration_result.num_inliers, frame.downsampled_point_cloud->size());
+    if (inlier_ratio < min_inlier_ratio_) {
+        Logger::info("Rejected loop closure between keyframes " + std::to_string(nearest_keyframe_id) + " and " +
+                     std::to_string(frame.keyframe_id) + ": GICP inlier ratio " + std::to_string(inlier_ratio) +
+                     " (min " + std::to_string(min_inlier_ratio_) + ")");
+        return std::nullopt;
+    }
+
+    const Sophus::SE3d refined_relative_pose = utils::eigen_to_sophus(registration_result.T_target_source.matrix());
 
     const auto loop_closure =
         LoopClosure(nearest_keyframe_id, frame.keyframe_id, refined_relative_pose, loop_closure_covariance_);
@@ -62,9 +88,9 @@ std::optional<LoopClosure> LoopClosureDetector::detect_loop_closures(const Frame
     return loop_closure;
 }
 
-Sophus::SE3d LoopClosureDetector::local_registration(const pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud,
-                                                     const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
-                                                     const Sophus::SE3d& initial_transform_guess) {
+small_gicp::RegistrationResult LoopClosureDetector::local_registration(
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud, const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
+    const Sophus::SE3d& initial_transform_guess) {
     Timer timer(__func__, LogLevel::Info);
 
     local_registration_.setInputTarget(prev_point_cloud);
@@ -77,11 +103,7 @@ Sophus::SE3d LoopClosureDetector::local_registration(const pcl::PointCloud<pcl::
     // Logger::debug("Small GICP error: " + std::to_string(result.error));
     // Logger::debug("Small GICP converged: " + std::to_string(result.converged));
 
-    Eigen::Matrix4d transformation_matrix = local_registration_.getFinalTransformation().cast<double>();
-    // Orthogonalize the transformation matrix
-    Sophus::SE3d refined_pose = utils::eigen_to_sophus(transformation_matrix);
-
-    return refined_pose;
+    return local_registration_.getRegistrationResult();
 }
 
 void LoopClosureDetector::update_submaps(const Frame& frame) {

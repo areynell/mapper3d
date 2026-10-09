@@ -1,6 +1,7 @@
 #include "mapper3d/utils.h"
 
 #include <iomanip>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -81,6 +82,20 @@ Sophus::SE3d eigen_to_sophus(const Eigen::Matrix4d& eigen_matrix) {
 double deg2rad(const double deg) { return deg * (M_PI / 180.0); }
 
 double rad2deg(const double rad) { return rad * (180.0 / M_PI); }
+
+double inlier_ratio(const size_t num_inliers, const size_t num_points) {
+    if (num_points == 0) {
+        return 0.0;
+    }
+    return static_cast<double>(num_inliers) / static_cast<double>(num_points);
+}
+
+double error_per_inlier(const double error, const size_t num_inliers) {
+    if (num_inliers == 0) {
+        return std::numeric_limits<double>::infinity();
+    }
+    return error / static_cast<double>(num_inliers);
+}
 
 std::ofstream open_tum_file(const std::string& path, const std::string& description) {
     std::ofstream file;

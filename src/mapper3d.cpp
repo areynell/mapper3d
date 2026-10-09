@@ -221,13 +221,14 @@ Sophus::SE3d Mapper3D::estimate_lidar_odometry(const Sophus::SE3d& prev_pose, co
         registration_failure_count_++;
         consecutive_registration_failures_++;
 
-        Logger::warn("Registration failed: inlier ratio " +
-                     std::to_string(inlier_ratio(registration_result, point_cloud->size())) + " (min " +
-                     std::to_string(min_inlier_ratio_) + "), error per inlier " +
-                     std::to_string(error_per_inlier(registration_result)) + " (max " +
-                     std::to_string(max_error_per_inlier_) + "). Failure " +
-                     std::to_string(consecutive_registration_failures_) + " in a row, " +
-                     std::to_string(registration_failure_count_) + " this run.");
+        Logger::warn(
+            "Registration failed: inlier ratio " +
+            std::to_string(utils::inlier_ratio(registration_result.num_inliers, point_cloud->size())) + " (min " +
+            std::to_string(min_inlier_ratio_) + "), error per inlier " +
+            std::to_string(utils::error_per_inlier(registration_result.error, registration_result.num_inliers)) +
+            " (max " + std::to_string(max_error_per_inlier_) + "). Failure " +
+            std::to_string(consecutive_registration_failures_) + " in a row, " +
+            std::to_string(registration_failure_count_) + " this run.");
 
         // Enough failures in a row means that the front-end lidar odometry is lost, so we can no longer safely use pose
         // prediction from estimated twist, and instead need to perform a recovery using global registration. However,
@@ -471,24 +472,11 @@ bool Mapper3D::registration_is_acceptable(const small_gicp::RegistrationResult& 
         return false;
     }
 
-    if (inlier_ratio(result, num_points) >= min_inlier_ratio_ && error_per_inlier(result) <= max_error_per_inlier_) {
+    if (utils::inlier_ratio(result.num_inliers, num_points) >= min_inlier_ratio_ &&
+        utils::error_per_inlier(result.error, result.num_inliers) <= max_error_per_inlier_) {
         return true;
     }
     return false;
-}
-
-double Mapper3D::inlier_ratio(const small_gicp::RegistrationResult& result, const size_t num_points) const {
-    if (num_points == 0) {
-        return 0.0;
-    }
-    return static_cast<double>(result.num_inliers) / static_cast<double>(num_points);
-}
-
-double Mapper3D::error_per_inlier(const small_gicp::RegistrationResult& result) const {
-    if (result.num_inliers == 0) {
-        return 0.0;
-    }
-    return result.error / static_cast<double>(result.num_inliers);
 }
 
 Sophus::SE3d Mapper3D::sensor_pose_odom_frame() const { return sensor_pose_odom_frame_; }

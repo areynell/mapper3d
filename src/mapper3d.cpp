@@ -67,11 +67,9 @@ Mapper3D::Mapper3D(const Mapper3DParams& params)
     Timer::set_global_log_level(LogLevel::Info);
 
     // TODO: Use a more representative odometry pose uncertainty/covariance
-    odometry_covariance_ = Eigen::Matrix<double, 6, 6>::Zero();
-    odometry_covariance_.block<3, 3>(0, 0) = Eigen::DiagonalMatrix<double, 3>(
-        params.x_odom_uncertainty, params.y_odom_uncertainty, params.z_odom_uncertainty);
-    odometry_covariance_.block<3, 3>(3, 3) = Eigen::DiagonalMatrix<double, 3>(
-        params.roll_odom_uncertainty, params.pitch_odom_uncertainty, params.yaw_odom_uncertainty);
+    odometry_covariance_ = utils::gtsam_pose_covariance(
+        Eigen::Vector3d(params.roll_odom_uncertainty, params.pitch_odom_uncertainty, params.yaw_odom_uncertainty),
+        Eigen::Vector3d(params.x_odom_uncertainty, params.y_odom_uncertainty, params.z_odom_uncertainty));
 
     std::cout << "odometry_covariance_ = \n" << odometry_covariance_ << std::endl;
 

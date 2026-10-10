@@ -23,6 +23,11 @@ Eigen::Isometry3d sophus_to_isometry(const Sophus::SE3d& pose);
 double deg2rad(const double deg);
 double rad2deg(const double rad);
 
+// The 6x6 covariance of a gtsam::Pose3 factor with independent axes, from standard deviations (rotation in rad,
+// translation in m). GTSAM orders a pose's six components rotation first, then translation.
+Eigen::Matrix<double, 6, 6> gtsam_pose_covariance(const Eigen::Vector3d& rotation_sigmas,
+                                                  const Eigen::Vector3d& translation_sigmas);
+
 // The share of the source cloud's points that registration matched. 0 when the cloud is empty.
 double inlier_ratio(const size_t num_inliers, const size_t num_points);
 

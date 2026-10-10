@@ -32,12 +32,13 @@ struct LoopClosureDetectorParams {
     size_t min_final_inliers = 8;    // KISS-Matcher's matched keypoints after its final step
     double min_inlier_ratio = 0.70;  // GICP's num_inliers / points in the scan
 
-    double x_loop_uncertainty = 0.05;                     // X position uncertainty for loop closures (m)
-    double y_loop_uncertainty = 0.05;                     // Y position uncertainty for loop closures (m)
-    double z_loop_uncertainty = 0.05;                     // Z position uncertainty for loop closures (m)
-    double roll_loop_uncertainty = utils::deg2rad(3.0);   // Roll orientation uncertainty for loop closures (rad)
-    double pitch_loop_uncertainty = utils::deg2rad(3.0);  // Pitch orientation uncertainty for loop closures (rad)
-    double yaw_loop_uncertainty = utils::deg2rad(3.0);    // Yaw orientation uncertainty for loop closures (rad)
+    // Standard deviations of a loop closure.
+    double x_loop_uncertainty = 0.25;                      // X position uncertainty for loop closures (m)
+    double y_loop_uncertainty = 0.25;                      // Y position uncertainty for loop closures (m)
+    double z_loop_uncertainty = 0.25;                      // Z position uncertainty for loop closures (m)
+    double roll_loop_uncertainty = utils::deg2rad(0.25);   // Roll orientation uncertainty for loop closures (rad)
+    double pitch_loop_uncertainty = utils::deg2rad(0.25);  // Pitch orientation uncertainty for loop closures (rad)
+    double yaw_loop_uncertainty = utils::deg2rad(0.25);    // Yaw orientation uncertainty for loop closures (rad)
 };
 
 struct LoopClosure {

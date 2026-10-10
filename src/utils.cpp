@@ -83,6 +83,13 @@ double deg2rad(const double deg) { return deg * (M_PI / 180.0); }
 
 double rad2deg(const double rad) { return rad * (180.0 / M_PI); }
 
+Eigen::Matrix<double, 6, 6> gtsam_pose_covariance(const Eigen::Vector3d& rotation_sigmas,
+                                                  const Eigen::Vector3d& translation_sigmas) {
+    Eigen::Matrix<double, 6, 1> variances;
+    variances << rotation_sigmas.array().square(), translation_sigmas.array().square();
+    return variances.asDiagonal();
+}
+
 double inlier_ratio(const size_t num_inliers, const size_t num_points) {
     if (num_points == 0) {
         return 0.0;

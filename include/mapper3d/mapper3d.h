@@ -65,12 +65,13 @@ struct Mapper3DParams {
     std::string lidar_odometry_trajectory_file = "lidar_odometry_tum.txt";
     std::string online_trajectory_file = "online_estimate_tum.txt";
 
-    double x_odom_uncertainty = 0.02;                     // X position uncertainty for lidar odometry (m)
-    double y_odom_uncertainty = 0.02;                     // Y position uncertainty for lidar odometry (m)
-    double z_odom_uncertainty = 0.02;                     // Z position uncertainty for lidar odometry (m)
-    double roll_odom_uncertainty = utils::deg2rad(1.0);   // Roll orientation uncertainty for lidar odometry (rad)
-    double pitch_odom_uncertainty = utils::deg2rad(1.0);  // Pitch orientation uncertainty for lidar odometry (rad)
-    double yaw_odom_uncertainty = utils::deg2rad(1.0);    // Yaw orientation uncertainty for lidar odometry (rad)
+    // Standard deviations of one keyframe-to-keyframe odometry edge.
+    double x_odom_uncertainty = 0.05;                      // X position uncertainty for lidar odometry (m)
+    double y_odom_uncertainty = 0.05;                      // Y position uncertainty for lidar odometry (m)
+    double z_odom_uncertainty = 0.05;                      // Z position uncertainty for lidar odometry (m)
+    double roll_odom_uncertainty = utils::deg2rad(0.25);   // Roll orientation uncertainty for lidar odometry (rad)
+    double pitch_odom_uncertainty = utils::deg2rad(0.25);  // Pitch orientation uncertainty for lidar odometry (rad)
+    double yaw_odom_uncertainty = utils::deg2rad(0.25);    // Yaw orientation uncertainty for lidar odometry (rad)
 
     LocalRegistrationParams local_reg_params;
     GraphOptimizerParams graph_optimizer_params;

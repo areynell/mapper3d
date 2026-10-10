@@ -25,12 +25,9 @@ LoopClosureDetector::LoopClosureDetector(const LoopClosureDetectorParams& params
     local_registration_.setMaxCorrespondenceDistance(params.max_correspondence_distance);
     local_registration_.setNumThreads(params.num_threads);
 
-    // TODO: Use a more representative odometry pose uncertainty/covariance
-    loop_closure_covariance_ = Eigen::Matrix<double, 6, 6>::Zero();
-    loop_closure_covariance_.block<3, 3>(0, 0) = Eigen::DiagonalMatrix<double, 3>(
-        params.x_loop_uncertainty, params.y_loop_uncertainty, params.z_loop_uncertainty);
-    loop_closure_covariance_.block<3, 3>(3, 3) = Eigen::DiagonalMatrix<double, 3>(
-        params.roll_loop_uncertainty, params.pitch_loop_uncertainty, params.yaw_loop_uncertainty);
+    loop_closure_covariance_ = utils::gtsam_pose_covariance(
+        Eigen::Vector3d(params.roll_loop_uncertainty, params.pitch_loop_uncertainty, params.yaw_loop_uncertainty),
+        Eigen::Vector3d(params.x_loop_uncertainty, params.y_loop_uncertainty, params.z_loop_uncertainty));
 
     std::cout << "loop_closure_covariance_ = " << std::endl << loop_closure_covariance_ << std::endl;
 }

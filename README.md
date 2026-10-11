@@ -4,6 +4,12 @@
 
 The SLAM core is written as plain C++ libraries, fully decoupled from ROS 2, with a thin ROS 2 node that wraps it to handle message conversion and publishing. As such, the same core can be embedded in other applications or run offline on recorded data without ROS 2.
 
+<p align="center">
+  <img src="docs/kitti/sequence_00_mapping.gif" alt="Mapper3D building a map of KITTI sequence 00" width="800">
+  <br>
+  <em>Mapper3D building a map of KITTI sequence 00, at ~40× speed.</em>
+</p>
+
 ## Requirements
 
 - ROS 2 (ament_cmake), C++17, CMake ≥ 3.22.
@@ -92,6 +98,10 @@ evo_ape tum gt_07_tum.txt optimized_keyframes_tum.txt --align
 
 ## Results on KITTI
 
+<img src="docs/kitti/sequence_00_map.png" alt="Final map of KITTI sequence 00" width="100%">
+
+The final map of sequence 00, with the optimized keyframe path in white. Each point is an occupied 0.5 m voxel of the OpenVDB map.
+
 The following table and plots show the absolute trajectory error of the optimized keyframe poses (`optimized_keyframes_tum.txt`) against KITTI odometry ground-truth, measured at commit `3aaa692` with `regression_test.py`. The score is the RMSE from `evo_ape tum gt.txt optimized_keyframes_tum.txt --align`. Ground-truth is converted into the LiDAR frame first (`kitti_gt_to_tum.py`).
 
 | Sequence | Length (km) | Point Clouds | Keyframes | Loop closures | Optimized APE (m) |
@@ -122,15 +132,16 @@ Each plot shows the optimized trajectory estimate against the ground-truth traje
 
 ## Regression testing
 
-`regression_test.py` runs the KITTI sequences and checks that a change has not made the pipieline's estimated trajectories less accurate. It also records the pipeline's peak memory and CPU usage, how many loop closures it found, and writes a `trajectories.png` per sequence showing trajectory estimates against ground-truth. The results are compared against `test/regression_baseline.json`.
+`regression_test.py` runs the KITTI sequences and checks that a change has not made the pipeline's estimated trajectories less accurate. It also records the pipeline's peak memory and CPU usage, and writes a `trajectories.png` per sequence showing trajectory estimates against ground-truth. The results are compared against `test/regression_baseline.json`.
 
 ```bash
 ros2 run mapper3d regression_test.py                  # all sequences, compare to the baseline
 ros2 run mapper3d regression_test.py --sequences xx   # one sequence
 ```
 
-Exit code 0 means every sequence passed, 1 means a regression or a failed run, and 2 means data was missing for a sequence. The baseline is stamped with the commit it came from. To refresh it, check out `master`, rebuild, and run:
+Exit code 0 means every sequence passed, 1 means a regression or a failed run, and 2 means data was missing for a sequence. The baseline is stamped with the commit it came from. Each run writes its results to `regression_runs/<timestamp>/results.json` in the workspace, in the same format as the baseline. To refresh the baseline, check out `master`, rebuild, run all sequences, check the printed comparison, and then copy that run's `results.json` over the baseline:
 
 ```bash
-ros2 run mapper3d regression_test.py --update-baseline
+cd <path_to_ros2_ws>
+cp regression_runs/<timestamp>/results.json src/mapper3d/test/regression_baseline.json
 ```

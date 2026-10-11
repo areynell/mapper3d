@@ -92,15 +92,11 @@ For KITTI sequences, `kitti_gt_to_tum.py` converts a ground-truth file into the 
 compared directly:
 
 ```bash
-ros2 run mapper3d kitti_gt_to_tum.py --gt <poses>/xx.txt --sequence-dir <kitti_sequences_dir>/xx -o gt_07_tum.txt
-evo_ape tum gt_07_tum.txt optimized_keyframes_tum.txt --align
+ros2 run mapper3d kitti_gt_to_tum.py --gt <poses>/xx.txt --sequence-dir <kitti_sequences_dir>/xx -o gt_xx_tum.txt
+evo_ape tum gt_xx_tum.txt optimized_keyframes_tum.txt --align
 ```
 
 ## Results on KITTI
-
-<img src="docs/kitti/sequence_00_map.png" alt="Final map of KITTI sequence 00" width="100%">
-
-The final map of sequence 00, with the optimized keyframe path in white. Each point is an occupied 0.5 m voxel of the OpenVDB map.
 
 The following table and plots show the absolute trajectory error of the optimized keyframe poses (`optimized_keyframes_tum.txt`) against KITTI odometry ground-truth, measured at commit `3aaa692` with `regression_test.py`. The score is the RMSE from `evo_ape tum gt.txt optimized_keyframes_tum.txt --align`. Ground-truth is converted into the LiDAR frame first (`kitti_gt_to_tum.py`).
 

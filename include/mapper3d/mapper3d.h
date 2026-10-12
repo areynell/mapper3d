@@ -26,12 +26,13 @@
 namespace mapper3d {
 
 struct LocalRegistrationParams {
-    int num_threads = 8;                       // Number of threads for GICP
-    int num_neighbors_for_covariance = 20;     // Number of neighbors for covariance estimation
-    size_t wide_search_scans_after_reset = 5;  // Number of scans to allow a wide search window after local map reset
+    int num_threads = 8;                    // Number of threads for GICP
+    int num_neighbors_for_covariance = 20;  // Number of neighbors for covariance estimation
+    // Number of scans to allow a wide search window after local map reset
+    size_t wide_search_point_clouds_after_reset = 5;
 
     // At 10 Hz the normal gap is 0.1 s and one dropped scan gives 0.2 s.
-    double dropped_scan_interval = 0.15;  // (s)
+    double dropped_point_cloud_interval = 0.15;  // (s)
 
     // Size of the rolling local map, in insertions. A voxel no scan has touched for lru_horizon
     // insertions is deleted, and the delete pass runs every lru_clear_cycle.
@@ -157,9 +158,9 @@ class Mapper3D {
     std::vector<Eigen::Matrix4d> point_cloud_covariances_;
     int registration_num_threads_;
     int num_neighbors_for_covariance_;
-    size_t wide_search_scans_after_reset_;
-    size_t scans_since_map_reset_;
-    double dropped_scan_interval_;
+    size_t wide_search_point_clouds_after_reset_;
+    size_t point_clouds_since_map_reset_;
+    double dropped_point_cloud_interval_;
 
     double min_inlier_ratio_;
     double max_error_per_inlier_;
@@ -168,7 +169,7 @@ class Mapper3D {
     double max_plausible_sensor_speed_;
 
     size_t registration_failure_count_;
-    size_t coasted_scan_count_;
+    size_t coasted_point_cloud_count_;
     size_t relocalization_count_;
     size_t map_reset_count_;
 

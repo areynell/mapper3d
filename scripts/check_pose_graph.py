@@ -192,7 +192,7 @@ def find_ground_truth_lines(stamps_path, times):
     keyframe_ids = []
     keyframe_times = []
     for line in stamps_path.read_text().splitlines():
-        # A '#' header line, then one line per keyframe: 'keyframe_id scan_id timestamp'.
+        # A '#' header line, then one line per keyframe: 'keyframe_id point_cloud_id timestamp'.
         if line.startswith("#") or line.strip() == "":
             continue
         fields = line.split()

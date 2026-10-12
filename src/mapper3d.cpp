@@ -46,8 +46,8 @@ Mapper3D::Mapper3D(const Mapper3DParams& params)
       graph_optimizer_(params.graph_optimizer_params),
       registration_num_threads_(params.local_reg_params.num_threads),
       num_neighbors_for_covariance_(params.local_reg_params.num_neighbors_for_covariance),
-      wide_search_scans_after_reset_(params.local_reg_params.wide_search_scans_after_reset),
-      dropped_scan_interval_(params.local_reg_params.dropped_scan_interval),
+      wide_search_point_clouds_after_reset_(params.local_reg_params.wide_search_point_clouds_after_reset),
+      dropped_point_cloud_interval_(params.local_reg_params.dropped_point_cloud_interval),
       local_map_voxel_size_(params.voxel_size),
       lru_horizon_(params.local_reg_params.lru_horizon),
       lru_clear_cycle_(params.local_reg_params.lru_clear_cycle),
@@ -57,11 +57,11 @@ Mapper3D::Mapper3D(const Mapper3DParams& params)
       max_consecutive_registration_failures_(params.local_reg_params.max_consecutive_failures),
       consecutive_registration_failures_(0),
       registration_failure_count_(0),
-      coasted_scan_count_(0),
+      coasted_point_cloud_count_(0),
       relocalization_count_(0),
       map_reset_count_(0),
-      scans_since_map_reset_(0),
-      point_cloud_id_(-1),  // Starts at -1 so the first scan increments it to 0 at the top of spin_once()
+      point_clouds_since_map_reset_(0),
+      point_cloud_id_(-1),  // Starts at -1 so the first point cloud increments it to 0 at the top of spin_once()
       keyframe_id_(0) {
     Logger::set_global_log_level(LogLevel::Info);
     Timer::set_global_log_level(LogLevel::Info);
@@ -84,7 +84,7 @@ Mapper3D::Mapper3D(const Mapper3DParams& params)
 }
 
 void Mapper3D::check_homogeneous_point_format(const pcl::PointCloud<pcl::PointXYZ>::Ptr& point_cloud) const {
-    // Checking first scan only. A point's fourth number, data[3], is padding that PCL fills with
+    // Checking first point cloud only. A point's fourth number, data[3], is padding that PCL fills with
     // 1.0 by convention, which makes it the w of a homogeneous coordinate.
     // local_map_->insert multiplies each point by the 4x4 sensor pose, and only w = 1.0 applies
     // that pose multiplication correctly.
@@ -117,15 +117,15 @@ void Mapper3D::spin_once(const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud, 
 
     const double dt = prev_point_cloud_timestamp_ < 0.0 ? 0.0 : point_cloud_timestamp - prev_point_cloud_timestamp_;
 
-    // Scans were dropped, so the constant-velocity prediction had to bridge a longer gap than usual.
-    if (dt > dropped_scan_interval_) {
+    // Point clouds were dropped, so the constant-velocity prediction had to bridge a longer gap than usual.
+    if (dt > dropped_point_cloud_interval_) {
         keyframe_edge_degraded_ = true;
     }
 
     sensor_pose_odom_frame_ =
         estimate_lidar_odometry(prev_sensor_pose_odom_frame_, prev_twist_, downsampled_point_cloud_, dt);
 
-    // IMPORTANT: Only keyframes become graph nodes. Odometry runs on every scan.
+    // IMPORTANT: Only keyframes become graph nodes. Odometry runs on every point cloud.
     if (should_add_keyframe(sensor_pose_odom_frame_)) {
         graph_optimizer_.add_frame(Frame(keyframe_id_, point_cloud_id_, point_cloud_timestamp, sensor_pose_odom_frame_,
                                          pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>()),
@@ -168,7 +168,7 @@ bool Mapper3D::should_add_keyframe(const Sophus::SE3d& sensor_pose) const {
 Sophus::SE3d::Tangent Mapper3D::estimate_twist(const Sophus::SE3d& prev_pose, const Sophus::SE3d& pose,
                                                const double dt) {
     // Two poses measured over a real interval are needed before there is any velocity. The interval is
-    // zero until a second point cloud has arrived, so the first scan reports no movement.
+    // zero until a second point cloud has arrived, so the first point cloud reports no movement.
     if (dt <= 0.0) {
         return Sophus::SE3d::Tangent::Zero();
     }
@@ -186,8 +186,8 @@ Sophus::SE3d Mapper3D::estimate_lidar_odometry(const Sophus::SE3d& prev_pose, co
     small_gicp::PointCloudProxy<pcl::PointXYZ> source(*point_cloud, point_cloud_covariances_);
     estimate_point_cloud_covariances(source);
 
-    // The first scan defines the odom frame. The local map is empty, so there is nothing to register
-    // against: put this scan in as the map's first contents and set its pose to the origin.
+    // The first point cloud defines the odom frame. The local map is empty, so there is nothing to register
+    // against: put this point cloud in as the map's first contents and set its pose to the origin.
     if (local_map_->size() == 0) {
         local_map_->insert(source);
         return Sophus::SE3d();
@@ -203,7 +203,7 @@ Sophus::SE3d Mapper3D::estimate_lidar_odometry(const Sophus::SE3d& prev_pose, co
                   std::to_string(point_cloud->size()) + " error = " + std::to_string(registration_result.error) +
                   " map_voxels = " + std::to_string(local_map_->size()));
 
-    scans_since_map_reset_++;
+    point_clouds_since_map_reset_++;
 
     if (registration_is_acceptable(registration_result, point_cloud->size())) {
         consecutive_registration_failures_ = 0;
@@ -243,12 +243,12 @@ Sophus::SE3d Mapper3D::estimate_lidar_odometry(const Sophus::SE3d& prev_pose, co
         // If registration fails, use the twist-based predicted pose.
         // IMPORTANT: The point cloud is NOT added to the local map. Its pose is only a guess, and adding it would
         // likely contaminate the local map against which newer point clouds are registered.
-        coasted_scan_count_++;
+        coasted_point_cloud_count_++;
         Logger::warn(
             "Using constant-velocity pose prediction. Point cloud data will NOT be added to the local map. "
             "Registration has failed " +
             std::to_string(consecutive_registration_failures_) + " times in a row. " +
-            std::to_string(coasted_scan_count_) + " scans have used the predicted pose this run.");
+            std::to_string(coasted_point_cloud_count_) + " point clouds have used the predicted pose this run.");
 
         return predicted_sensor_pose;
     }
@@ -288,13 +288,13 @@ small_gicp::RegistrationResult Mapper3D::align_to_local_map(const small_gicp::Po
 
 bool Mapper3D::use_wide_correspondence_search(const double dt) const {
     // Search wide while the local map is new.
-    if (scans_since_map_reset_ < wide_search_scans_after_reset_) {
+    if (point_clouds_since_map_reset_ < wide_search_point_clouds_after_reset_) {
         return true;
     }
 
-    // Search wide if we have a dropped scan
-    if (dt > dropped_scan_interval_) {
-        Logger::warn("Scans have likely been dropped. Will use wide correspondence search.");
+    // Search wide if we have a dropped point cloud
+    if (dt > dropped_point_cloud_interval_) {
+        Logger::warn("Point clouds have likely been dropped. Will use wide correspondence search.");
         return true;
     }
 
@@ -314,7 +314,7 @@ void Mapper3D::reset_local_map(const Sophus::SE3d& pose, const small_gicp::Point
     local_map_->insert(source, utils::sophus_to_isometry(pose));
 
     // A rebuilt map is as unproven as the first one, so open the wide search window again.
-    scans_since_map_reset_ = 0;
+    point_clouds_since_map_reset_ = 0;
 }
 
 std::optional<Sophus::SE3d> Mapper3D::global_registration_pose(const Sophus::SE3d& prev_pose,

@@ -12,8 +12,8 @@
       "optimized_ape_rmse": 1.1749,
       "optimized_poses": 2721,
       "ground_truth_poses": 4541,
-      "missed_scans": 0,
-      "missed_start_scans": 0,
+      "missed_point_clouds": 0,
+      "missed_start_point_clouds": 0,
       "peak_rss_mb": 5366.4,
       "wall_seconds": 477.9,
       "cpu_percent": 98.1
@@ -21,7 +21,7 @@
     "01": {
       "status": "unavailable",
       "missing": [
-        "/home/alex/projects/datasets/kitti/ros2/kitti_sequence_01"
+        "ros2/kitti_sequence_01"
       ]
     },
     "02": {
@@ -31,8 +31,8 @@
       "optimized_ape_rmse": 5.3886,
       "optimized_poses": 3904,
       "ground_truth_poses": 4661,
-      "missed_scans": 0,
-      "missed_start_scans": 0,
+      "missed_point_clouds": 0,
+      "missed_start_point_clouds": 0,
       "peak_rss_mb": 7782.2,
       "wall_seconds": 491.2,
       "cpu_percent": 91.7
@@ -40,13 +40,13 @@
     "03": {
       "status": "unavailable",
       "missing": [
-        "/home/alex/projects/datasets/kitti/ros2/kitti_sequence_03"
+        "ros2/kitti_sequence_03"
       ]
     },
     "04": {
       "status": "unavailable",
       "missing": [
-        "/home/alex/projects/datasets/kitti/ros2/kitti_sequence_04"
+        "ros2/kitti_sequence_04"
       ]
     },
     "05": {
@@ -56,8 +56,8 @@
       "optimized_ape_rmse": 0.276,
       "optimized_poses": 1671,
       "ground_truth_poses": 2761,
-      "missed_scans": 0,
-      "missed_start_scans": 0,
+      "missed_point_clouds": 0,
+      "missed_start_point_clouds": 0,
       "peak_rss_mb": 3431.2,
       "wall_seconds": 293.2,
       "cpu_percent": 91.3
@@ -69,8 +69,8 @@
       "optimized_ape_rmse": 0.2907,
       "optimized_poses": 917,
       "ground_truth_poses": 1101,
-      "missed_scans": 0,
-      "missed_start_scans": 0,
+      "missed_point_clouds": 0,
+      "missed_start_point_clouds": 0,
       "peak_rss_mb": 1981.6,
       "wall_seconds": 118.3,
       "cpu_percent": 146.1
@@ -82,8 +82,8 @@
       "optimized_ape_rmse": 0.3334,
       "optimized_poses": 505,
       "ground_truth_poses": 1101,
-      "missed_scans": 0,
-      "missed_start_scans": 0,
+      "missed_point_clouds": 0,
+      "missed_start_point_clouds": 0,
       "peak_rss_mb": 1054.5,
       "wall_seconds": 118.2,
       "cpu_percent": 49.1
@@ -95,8 +95,8 @@
       "optimized_ape_rmse": 1.8034,
       "optimized_poses": 2354,
       "ground_truth_poses": 4071,
-      "missed_scans": 0,
-      "missed_start_scans": 0,
+      "missed_point_clouds": 0,
+      "missed_start_point_clouds": 0,
       "peak_rss_mb": 4622.3,
       "wall_seconds": 429.1,
       "cpu_percent": 72.3
@@ -107,8 +107,8 @@
       "odometry_poses": 1591,
       "optimized_poses": 1252,
       "ground_truth_poses": 1591,
-      "missed_scans": 0,
-      "missed_start_scans": 0,
+      "missed_point_clouds": 0,
+      "missed_start_point_clouds": 0,
       "peak_rss_mb": 2562.6,
       "wall_seconds": 170.4,
       "cpu_percent": 73.2
@@ -116,7 +116,7 @@
     "10": {
       "status": "unavailable",
       "missing": [
-        "/home/alex/projects/datasets/kitti/ros2/kitti_sequence_10"
+        "ros2/kitti_sequence_10"
       ]
     }
   }

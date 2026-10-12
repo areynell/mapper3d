@@ -87,6 +87,10 @@ PLAYER_RESUME_TYPE = "rosbag2_interfaces/srv/Resume"
 # Timestamp association tolerance, for both scoring and plotting.
 TIME_TOLERANCE = 0.01
 
+# The local map is built from the first point clouds of a run, so losing any of these changes the input the
+# whole run is scored on. A run that lost one fails as missed_start_point_clouds instead of being scored.
+OPENING_POINT_CLOUDS = 10
+
 def resolve_inputs(sequence, dataset_root):
     """Return the bag, ground truth and sequence directory for a sequence, plus any missing paths."""
     inputs = {
@@ -94,7 +98,7 @@ def resolve_inputs(sequence, dataset_root):
         "ground_truth": dataset_root / "original" / "poses" / f"{sequence}.txt",
         "sequence_dir": dataset_root / "original" / "sequences" / sequence,
     }
-    missing = [str(path) for path in inputs.values() if not path.exists()]
+    missing = [str(path.relative_to(dataset_root)) for path in inputs.values() if not path.exists()]
     return inputs, missing
 
 def wait_for_subscriber(node, timeout):
@@ -247,10 +251,11 @@ def run_evo_ape(run_dir, filename, results_zip):
         stats = json.loads(archive.read("stats.json"))
     return round(stats["rmse"], 4), None
 
-def count_missed_scans(run_dir):
-    """Count the scans that never reached the node, and how many of those were at the start of the run.
+def count_missed_point_clouds(run_dir):
+    """Count the point clouds that never reached the node, and how many of those were among the first
+    OPENING_POINT_CLOUDS of the run.
 
-    Returns the `ground_truth_poses`, `missed_scans` and `missed_start_scans` fields, or an empty
+    Returns the `ground_truth_poses`, `missed_point_clouds` and `missed_start_point_clouds` fields, or an empty
     dictionary when either file is missing.
     """
     ground_truth = run_dir / "gt.txt"
@@ -261,28 +266,43 @@ def count_missed_scans(run_dir):
     gt_stamps = read_timestamps(ground_truth)
     trajectory_stamps = read_timestamps(trajectory)
 
-    # The node may have missed scans at the start of the run, before it subscribed to the point cloud topic.
-    # Count how many ground truth poses were earlier than the first pose the node actually received.
-    if trajectory_stamps:
-        first_kept_stamp = trajectory_stamps[0] - TIME_TOLERANCE
-        missed_start_scans = 0
-        for stamp in gt_stamps:
-            if stamp < first_kept_stamp:
-                missed_start_scans += 1
-    else:
-        missed_start_scans = len(gt_stamps)
+    # A ground-truth stamp with no pose within TIME_TOLERANCE is a point cloud the node never processed. Check
+    # every opening stamp, not only those before the first pose: a run can keep the first point cloud and
+    # still lose the next few.
+    missed_start_point_clouds = 0
+    for gt_stamp in gt_stamps[:OPENING_POINT_CLOUDS]:
+        found = False
+        for stamp in trajectory_stamps:
+            if abs(stamp - gt_stamp) <= TIME_TOLERANCE:
+                found = True
+                break
+            if stamp > gt_stamp + TIME_TOLERANCE:
+                break
+        if not found:
+            missed_start_point_clouds += 1
 
     return {
         "ground_truth_poses": len(gt_stamps),
-        "missed_scans": len(gt_stamps) - len(trajectory_stamps),
-        "missed_start_scans": missed_start_scans,
+        "missed_point_clouds": len(gt_stamps) - len(trajectory_stamps),
+        "missed_start_point_clouds": missed_start_point_clouds,
     }
 
 def score_trajectories(run_dir):
     """Score the front-end and back-end trajectories against ground truth.
 
-    Each one contributes a `<name>_ape_rmse` and a `<name>_poses` field.
+    Each one contributes a `<name>_ape_rmse` and a `<name>_poses` field. A run that lost any of its opening
+    point clouds is not scored: it returns status `missed_start_point_clouds`, which fails the run.
     """
+    missed = count_missed_point_clouds(run_dir)
+    if missed.get("missed_start_point_clouds", 0) > 0:
+        result = {
+            "status": "missed_start_point_clouds",
+            "detail": f"{missed['missed_start_point_clouds']} of the first {OPENING_POINT_CLOUDS} point clouds "
+                      f"never reached the node, so the run measured a different input; re-run it",
+        }
+        result.update(missed)
+        return result
+
     result = {"status": "ok"}
 
     for name, filename, required in SCORED_TRAJECTORIES:
@@ -300,7 +320,7 @@ def score_trajectories(run_dir):
         result[f"{name}_ape_rmse"] = rmse
         result[f"{name}_poses"] = count_poses(trajectory)
 
-    result.update(count_missed_scans(run_dir))
+    result.update(missed)
 
     return result
 
@@ -497,7 +517,7 @@ def describe_current_commit():
     return {
         "git_sha": git_output("rev-parse", "HEAD"),
         "branch": git_output("rev-parse", "--abbrev-ref", "HEAD"),
-        "dirty": bool(git_output("status", "--porcelain")),
+        "dirty": bool(git_output("status", "--porcelain", "--untracked-files=no")),
     }
 
 def compare(results, baseline):
@@ -606,10 +626,10 @@ def print_sequence_result(sequence, result, out_dir):
             print(f"  {name + ' APE':<14} not written")
         else:
             print(f"  {name + ' APE':<14} {rmse:.3f} m over {result[f'{name}_poses']} poses")
-    missed = result.get("missed_scans")
+    missed = result.get("missed_point_clouds")
     if missed:
-        print(f"  {'missed scans':<14} {missed} of {result['ground_truth_poses']} never reached the "
-              f"node, {result.get('missed_start_scans', 0)} of them at the start of the run")
+        # A scored run lost none of its opening point clouds, so these were all lost later in the run.
+        print(f"  {'missed scans':<14} {missed} of {result['ground_truth_poses']} never reached the node")
     print(f"  {'resources':<14} peak RSS {result['peak_rss_mb']} MB, "
           f"CPU {result.get('cpu_percent', 0):.0f}%")
     plot = out_dir / sequence / "trajectories.png"
@@ -624,7 +644,7 @@ def run_all_sequences(args, out_dir, results):
         print(f"\n=== sequence {sequence} ===")
         inputs, missing = resolve_inputs(sequence, args.dataset_root)
         if missing:
-            print(f"  unavailable: {', '.join(missing)}")
+            print(f"  unavailable: {', '.join(str(args.dataset_root / path) for path in missing)}")
             results["sequences"][sequence] = {"status": "unavailable", "missing": missing}
             continue
 

@@ -229,14 +229,15 @@ void GraphOptimizer::add_odometry_constraint(const Sophus::SE3d& pose, const dou
         graph_.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(prev_keyframe_symbol, current_keyframe_symbol,
                                                                   odometry_relative_pose, odometry_noise_model);
 
-        // GNC must keep a normal odometry edge. A degraded one (registration failed or scans were dropped between its
-        // keyframes) may be wrong where a loop closure is right, so GNC is allowed to reject it.
+        // GNC must keep a normal odometry edge. A degraded one (registration failed or point clouds were dropped
+        // between its keyframes) may be wrong where a loop closure is right, so GNC is allowed to reject it.
         const size_t factor_index = graph_.size() - 1;
         if (odometry_degraded) {
             degraded_odometry_factors_.push_back(factor_index);
-            Logger::warn("Odometry edge " + prev_keyframe_symbol.string() + " -> " + current_keyframe_symbol.string() +
-                         " is degraded: registration failed or scans were dropped since the previous keyframe. GNC "
-                         "may reject it.");
+            Logger::warn(
+                "Odometry edge " + prev_keyframe_symbol.string() + " -> " + current_keyframe_symbol.string() +
+                " is degraded: registration failed or point clouds were dropped since the previous keyframe. GNC "
+                "may reject it.");
         } else {
             known_inlier_factors_.push_back(factor_index);
         }
@@ -465,7 +466,7 @@ void GraphOptimizer::write_keyframe_stamps() const {
         return;
     }
 
-    stamps_file << "# keyframe_id scan_id timestamp\n";
+    stamps_file << "# keyframe_id point_cloud_id timestamp\n";
     // No processed_frames_mutex_: the frame-processing thread is the sole writer and it is the
     // thread running this.
     for (const Frame& frame : processed_frames_) {

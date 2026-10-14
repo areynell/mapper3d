@@ -33,6 +33,8 @@ struct Mapper3DNodeParams {
     std::string loop_closure_pub_topic = "/loop_closures";
     std::string map_pub_topic = "/map";
 
+    double map_publish_interval = 1.0;
+
     mapper3d::Mapper3DParams mapper3d_params;
 };
 
@@ -80,6 +82,9 @@ class Mapper3DNode : public rclcpp::Node {
     std::condition_variable visualization_cv_;
     std::chrono::duration<double> visualization_wait_timeout_;
     bool new_data_available_;
+
+    std::chrono::duration<double> map_publish_interval_;
+    std::chrono::steady_clock::time_point prev_map_publish_time_;
 
     // Sophus::SE3d map_to_sensor_transform_;
 

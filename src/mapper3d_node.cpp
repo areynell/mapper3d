@@ -26,6 +26,7 @@ Mapper3DNode::Mapper3DNode(const Mapper3DNodeParams &params)
       sensor_frame_id_(params.sensor_frame_id),
       run_visualization_thread_(true),
       new_data_available_(false),
+      map_publish_interval_(params.map_publish_interval),
       //   map_to_sensor_transform_(Sophus::SE3d()),
       prev_timestamp_(rclcpp::Time(0, 0, RCL_ROS_TIME)) {
     RCLCPP_INFO(this->get_logger(), "Initializing Mapper3DNode...");
@@ -148,7 +149,12 @@ void Mapper3DNode::visualization_thread_func() {
 
         publish_pose_trajectory(graph_vis_data.poses, timestamp);
         publish_loop_closures(graph_vis_data.poses, graph_vis_data.loop_closure_edges, timestamp);
-        publish_map(graph_vis_data.map, timestamp);
+
+        const auto current_time = std::chrono::steady_clock::now();
+        if (current_time - prev_map_publish_time_ >= map_publish_interval_) {
+            publish_map(graph_vis_data.map, timestamp);
+            prev_map_publish_time_ = current_time;
+        }
     }
 }
 

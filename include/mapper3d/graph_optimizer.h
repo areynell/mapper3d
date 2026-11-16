@@ -25,6 +25,8 @@
 
 namespace mapper3d {
 
+// IMPORTANT: Each field is set from config/mapper3d.yaml by load_graph_optimizer_parameters() in mapper3d_node.cpp. A
+// new field needs a line in both.
 struct GraphOptimizerParams {
     int max_iterations = 100;
     // gtsam::GncLossType loss_type = gtsam::GncLossType::TLS;
@@ -35,6 +37,12 @@ struct GraphOptimizerParams {
     // measurement.
     double prior_rotation_sigma = 1.0e-4;     // (rad)
     double prior_translation_sigma = 1.0e-4;  // (m)
+
+    // optimize() runs once min_new_loop_closures_for_optimization new loop closures are waiting and
+    // optimization_trigger_interval has passed since the last optimize(). It also runs when any loop closure is waiting
+    // and no keyframe has arrived for optimization_trigger_interval, and once more at shutdown.
+    double optimization_trigger_interval = 10.0;  // (s)
+    size_t min_new_loop_closures_for_optimization = 10;
 
     // Keyframe trajectories written to disk in the TUM format at shutdown for offline evaluation with evo.
     std::string unoptimized_trajectory_file = "unoptimized_keyframes_tum.txt";

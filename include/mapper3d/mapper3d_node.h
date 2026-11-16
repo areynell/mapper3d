@@ -18,13 +18,14 @@
 
 #include "mapper3d/mapper3d.h"
 
+// IMPORTANT: Each field is set from config/mapper3d.yaml by load_node_parameters() in mapper3d_node.cpp. A new field
+// needs a line in both.
 struct Mapper3DNodeParams {
     int sub_queue_size = 100;
     int pub_queue_size = 1;
 
     std::string map_frame_id = "map";
     std::string odom_frame_id = "odom";
-    std::string base_frame_id = "base_link";
     std::string sensor_frame_id = "velodyne";
 
     // std::string point_cloud_sub_topic = "/points_raw";
@@ -34,16 +35,27 @@ struct Mapper3DNodeParams {
     std::string map_pub_topic = "/map";
 
     double map_publish_interval = 1.0;
+    double map_publish_voxel_size = 0.5;
 
     mapper3d::Mapper3DParams mapper3d_params;
 };
 
 class Mapper3DNode : public rclcpp::Node {
    public:
-    Mapper3DNode(const Mapper3DNodeParams &params);
+    explicit Mapper3DNode(const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
     ~Mapper3DNode();
 
    private:
+    // Reads every parameter from the parameter file (--params-file), keeping the struct's default for any it does
+    // not give. Each load_*_parameters() function fills one params struct, then calls the function for each struct
+    // nested in it.
+    Mapper3DNodeParams load_parameters();
+    void load_node_parameters(Mapper3DNodeParams &node_params);
+    void load_front_end_parameters(mapper3d::Mapper3DParams &front_end);
+    void load_local_registration_parameters(mapper3d::LocalRegistrationParams &local_registration);
+    void load_graph_optimizer_parameters(mapper3d::GraphOptimizerParams &graph_optimizer);
+    void load_loop_closure_detector_parameters(mapper3d::LoopClosureDetectorParams &loop_closure);
+
     void pointcloud_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
 
     void publish_pose_trajectory(const std::vector<Sophus::SE3d> &poses, const rclcpp::Time &timestamp);
@@ -69,10 +81,8 @@ class Mapper3DNode : public rclcpp::Node {
 
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
-    std::string map_frame_id_;
-    std::string odom_frame_id_;
-    std::string base_frame_id_;
-    std::string sensor_frame_id_;
+    // IMPORTANT: Declared before the members built from it. Members are built in declaration order.
+    const Mapper3DNodeParams params_;
 
     mapper3d::Mapper3D mapper3d_;
 

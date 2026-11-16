@@ -180,9 +180,9 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
-# Install launch files and the RViz config
+# Install launch files, the RViz config and the parameter file
 install(
-  DIRECTORY launch rviz
+  DIRECTORY launch rviz config
   DESTINATION share/${PROJECT_NAME}
 )
 

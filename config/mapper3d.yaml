@@ -1,0 +1,101 @@
+# Parameters for mapper3d_node.
+
+mapper3d_node:
+  ros__parameters:
+    # Voxel size for downsampling each point cloud, for the local map, and for KISS-Matcher in both the front and back ends (m).
+    voxel_size: 0.5
+
+    node:
+      point_cloud_sub_topic: /velodyne_points
+      pose_trajectory_pub_topic: /pose_trajectory
+      loop_closure_pub_topic: /loop_closures
+      map_pub_topic: /map
+      sub_queue_size: 100
+      pub_queue_size: 1
+
+      map_frame_id: map
+      odom_frame_id: odom
+      sensor_frame_id: velodyne
+
+      map_publish_interval: 1.0    # (s)
+      map_publish_voxel_size: 0.5  # The published map is downsampled to this (m)
+
+    front_end:
+      z_height_threshold: -1.0  # Points below this height in the sensor frame are dropped (m)
+      min_sensor_distance: 3.0  # Points closer to the sensor than this are dropped (m)
+
+      # A point cloud becomes a keyframe when it has moved or turned this far from the previous keyframe.
+      keyframe_distance_threshold: 1.0  # (m)
+      keyframe_rotation_threshold_deg: 10.0
+
+      # Per-point-cloud trajectories in the TUM format, for evo.
+      lidar_odometry_trajectory_file: lidar_odometry_tum.txt
+      online_trajectory_file: online_estimate_tum.txt
+
+      # Standard deviations of one keyframe-to-keyframe odometry edge.
+      x_odom_uncertainty: 0.05  # (m)
+      y_odom_uncertainty: 0.05  # (m)
+      z_odom_uncertainty: 0.05  # (m)
+      roll_odom_uncertainty_deg: 0.25
+      pitch_odom_uncertainty_deg: 0.25
+      yaw_odom_uncertainty_deg: 0.25
+
+    local_registration:
+      num_threads: 8  # Threads for GICP
+      num_neighbors_for_covariance: 20 # Number of nearest neighbors used to compute the covariance of each point in GICP.
+
+      # Number of point clouds after a local map reset that get wide correspondence search.
+      wide_search_point_clouds_after_reset: 5
+
+      # A gap between point clouds longer than this counts as a dropped point cloud (s). At 10 Hz the normal gap is 0.1 s.
+      dropped_point_cloud_interval: 0.15
+
+      # Size of the rolling local map, in insertions. A voxel no point cloud has touched for lru_horizon insertions is
+      # deleted, and the delete pass runs every lru_clear_cycle insertions.
+      lru_horizon: 100
+      lru_clear_cycle: 10
+
+      min_inlier_ratio: 0.70      # GICP's num_inliers / points in the point cloud
+      max_error_per_inlier: 0.60  # GICP's error / num_inliers
+
+      # Failed registrations in a row before global registration runs.
+      max_consecutive_failures: 3
+
+      # A sensor speed faster than this is rejected (m/s).
+      max_plausible_sensor_speed: 50.0
+
+    graph_optimizer:
+      max_iterations: 100
+      map_voxel_size: 0.5  # Voxel size of the map (m)
+
+      # Sigmas of the prior on the first keyframe's pose. They must stay far tighter than any measurement.
+      prior_rotation_sigma_rad: 1.0e-4
+      prior_translation_sigma: 1.0e-4  # (m)
+
+      # optimize() runs once min_new_loop_closures_for_optimization new loop closures are waiting and
+      # optimization_trigger_interval has passed since the last optimize(). It also runs when any loop closure is
+      # waiting and no keyframe has arrived for optimization_trigger_interval, and once more at shutdown.
+      optimization_trigger_interval: 10.0  # (s)
+      min_new_loop_closures_for_optimization: 10
+
+      # Keyframe trajectories in the TUM format, written at shutdown.
+      unoptimized_trajectory_file: unoptimized_keyframes_tum.txt
+      optimized_trajectory_file: optimized_keyframes_tum.txt
+
+    loop_closure_detector:
+      # GICP refines KISS-Matcher's answer, using only points whose nearest point in the other point cloud is
+      # closer than this (m).
+      max_correspondence_distance: 1.0
+      num_threads: 4  # Threads for GICP
+
+      # A loop closure candidate is rejected unless it passes both.
+      min_final_inliers: 8    # KISS-Matcher's matched keypoints after its final step
+      min_inlier_ratio: 0.70  # GICP's num_inliers / points in the point cloud
+
+      # Standard deviations of a loop closure edge.
+      x_loop_uncertainty: 0.25  # (m)
+      y_loop_uncertainty: 0.25  # (m)
+      z_loop_uncertainty: 0.25  # (m)
+      roll_loop_uncertainty_deg: 0.25
+      pitch_loop_uncertainty_deg: 0.25
+      yaw_loop_uncertainty_deg: 0.25

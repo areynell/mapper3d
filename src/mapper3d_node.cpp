@@ -4,44 +4,42 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <tf2/convert.h>
 
-#include <cstdlib>
+#include <cstdint>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <mutex>
 #include <rclcpp/logging.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/time.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <string>
 #include <vector>
 
 #include "mapper3d/common.h"
 #include "mapper3d/logging.h"
 #include "mapper3d/utils.h"
 
-Mapper3DNode::Mapper3DNode(const Mapper3DNodeParams &params)
-    : Node("mapper3d_node"),
-      mapper3d_(params.mapper3d_params),
-      map_frame_id_(params.map_frame_id),
-      odom_frame_id_(params.odom_frame_id),
-      base_frame_id_(params.base_frame_id),
-      sensor_frame_id_(params.sensor_frame_id),
+Mapper3DNode::Mapper3DNode(const rclcpp::NodeOptions &options)
+    : Node("mapper3d_node", options),
+      params_(load_parameters()),
+      mapper3d_(params_.mapper3d_params),
       run_visualization_thread_(true),
       new_data_available_(false),
-      map_publish_interval_(params.map_publish_interval),
+      map_publish_interval_(params_.map_publish_interval),
       //   map_to_sensor_transform_(Sophus::SE3d()),
       prev_timestamp_(rclcpp::Time(0, 0, RCL_ROS_TIME)) {
     RCLCPP_INFO(this->get_logger(), "Initializing Mapper3DNode...");
 
     point_cloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-        params.point_cloud_sub_topic, params.sub_queue_size,
+        params_.point_cloud_sub_topic, params_.sub_queue_size,
         std::bind(&Mapper3DNode::pointcloud_callback, this, std::placeholders::_1));
 
     pose_trajectory_pub_ =
-        this->create_publisher<nav_msgs::msg::Path>(params.pose_trajectory_pub_topic, params.pub_queue_size);
+        this->create_publisher<nav_msgs::msg::Path>(params_.pose_trajectory_pub_topic, params_.pub_queue_size);
 
-    loop_closure_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(params.loop_closure_pub_topic,
-                                                                                     params.pub_queue_size);
+    loop_closure_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(params_.loop_closure_pub_topic,
+                                                                                     params_.pub_queue_size);
 
-    map_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(params.map_pub_topic, params.pub_queue_size);
+    map_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(params_.map_pub_topic, params_.pub_queue_size);
 
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(this);
 
@@ -49,6 +47,131 @@ Mapper3DNode::Mapper3DNode(const Mapper3DNodeParams &params)
     visualization_thread_ = std::thread(&Mapper3DNode::visualization_thread_func, this);
 
     RCLCPP_INFO(this->get_logger(), "Mapper3DNode initialized.");
+}
+
+Mapper3DNodeParams Mapper3DNode::load_parameters() {
+    Mapper3DNodeParams params;
+    load_node_parameters(params);
+    return params;
+}
+
+void Mapper3DNode::load_node_parameters(Mapper3DNodeParams &node_params) {
+    node_params.point_cloud_sub_topic =
+        declare_parameter("node.point_cloud_sub_topic", node_params.point_cloud_sub_topic);
+    node_params.pose_trajectory_pub_topic =
+        declare_parameter("node.pose_trajectory_pub_topic", node_params.pose_trajectory_pub_topic);
+    node_params.loop_closure_pub_topic =
+        declare_parameter("node.loop_closure_pub_topic", node_params.loop_closure_pub_topic);
+    node_params.map_pub_topic = declare_parameter("node.map_pub_topic", node_params.map_pub_topic);
+    node_params.sub_queue_size = declare_parameter("node.sub_queue_size", node_params.sub_queue_size);
+    node_params.pub_queue_size = declare_parameter("node.pub_queue_size", node_params.pub_queue_size);
+    node_params.map_frame_id = declare_parameter("node.map_frame_id", node_params.map_frame_id);
+    node_params.odom_frame_id = declare_parameter("node.odom_frame_id", node_params.odom_frame_id);
+    node_params.sensor_frame_id = declare_parameter("node.sensor_frame_id", node_params.sensor_frame_id);
+    node_params.map_publish_interval = declare_parameter("node.map_publish_interval", node_params.map_publish_interval);
+    node_params.map_publish_voxel_size =
+        declare_parameter("node.map_publish_voxel_size", node_params.map_publish_voxel_size);
+
+    load_front_end_parameters(node_params.mapper3d_params);
+}
+
+void Mapper3DNode::load_front_end_parameters(mapper3d::Mapper3DParams &front_end) {
+    // KISS-Matcher keypoint matching needs them to be equal.
+    front_end.voxel_size = declare_parameter("voxel_size", front_end.voxel_size);
+    front_end.graph_optimizer_params.loop_closure_detector_params.voxel_size = front_end.voxel_size;
+
+    front_end.z_height_threshold = declare_parameter("front_end.z_height_threshold", front_end.z_height_threshold);
+    front_end.min_sensor_distance = declare_parameter("front_end.min_sensor_distance", front_end.min_sensor_distance);
+    front_end.keyframe_distance_threshold =
+        declare_parameter("front_end.keyframe_distance_threshold", front_end.keyframe_distance_threshold);
+    front_end.keyframe_rotation_threshold = mapper3d::utils::deg2rad(declare_parameter(
+        "front_end.keyframe_rotation_threshold_deg", mapper3d::utils::rad2deg(front_end.keyframe_rotation_threshold)));
+    front_end.lidar_odometry_trajectory_file =
+        declare_parameter("front_end.lidar_odometry_trajectory_file", front_end.lidar_odometry_trajectory_file);
+    front_end.online_trajectory_file =
+        declare_parameter("front_end.online_trajectory_file", front_end.online_trajectory_file);
+    front_end.x_odom_uncertainty = declare_parameter("front_end.x_odom_uncertainty", front_end.x_odom_uncertainty);
+    front_end.y_odom_uncertainty = declare_parameter("front_end.y_odom_uncertainty", front_end.y_odom_uncertainty);
+    front_end.z_odom_uncertainty = declare_parameter("front_end.z_odom_uncertainty", front_end.z_odom_uncertainty);
+    front_end.roll_odom_uncertainty = mapper3d::utils::deg2rad(declare_parameter(
+        "front_end.roll_odom_uncertainty_deg", mapper3d::utils::rad2deg(front_end.roll_odom_uncertainty)));
+    front_end.pitch_odom_uncertainty = mapper3d::utils::deg2rad(declare_parameter(
+        "front_end.pitch_odom_uncertainty_deg", mapper3d::utils::rad2deg(front_end.pitch_odom_uncertainty)));
+    front_end.yaw_odom_uncertainty = mapper3d::utils::deg2rad(declare_parameter(
+        "front_end.yaw_odom_uncertainty_deg", mapper3d::utils::rad2deg(front_end.yaw_odom_uncertainty)));
+
+    load_local_registration_parameters(front_end.local_reg_params);
+    load_graph_optimizer_parameters(front_end.graph_optimizer_params);
+}
+
+void Mapper3DNode::load_local_registration_parameters(mapper3d::LocalRegistrationParams &local_registration) {
+    local_registration.num_threads =
+        declare_parameter("local_registration.num_threads", local_registration.num_threads);
+    local_registration.num_neighbors_for_covariance = declare_parameter(
+        "local_registration.num_neighbors_for_covariance", local_registration.num_neighbors_for_covariance);
+    local_registration.wide_search_point_clouds_after_reset =
+        declare_parameter<int64_t>("local_registration.wide_search_point_clouds_after_reset",
+                                   local_registration.wide_search_point_clouds_after_reset);
+    local_registration.dropped_point_cloud_interval = declare_parameter(
+        "local_registration.dropped_point_cloud_interval", local_registration.dropped_point_cloud_interval);
+    local_registration.lru_horizon =
+        declare_parameter<int64_t>("local_registration.lru_horizon", local_registration.lru_horizon);
+    local_registration.lru_clear_cycle =
+        declare_parameter<int64_t>("local_registration.lru_clear_cycle", local_registration.lru_clear_cycle);
+    local_registration.min_inlier_ratio =
+        declare_parameter("local_registration.min_inlier_ratio", local_registration.min_inlier_ratio);
+    local_registration.max_error_per_inlier =
+        declare_parameter("local_registration.max_error_per_inlier", local_registration.max_error_per_inlier);
+    local_registration.max_consecutive_failures = declare_parameter<int64_t>(
+        "local_registration.max_consecutive_failures", local_registration.max_consecutive_failures);
+    local_registration.max_plausible_sensor_speed = declare_parameter("local_registration.max_plausible_sensor_speed",
+                                                                      local_registration.max_plausible_sensor_speed);
+}
+
+void Mapper3DNode::load_graph_optimizer_parameters(mapper3d::GraphOptimizerParams &graph_optimizer) {
+    graph_optimizer.max_iterations =
+        declare_parameter("graph_optimizer.max_iterations", graph_optimizer.max_iterations);
+    graph_optimizer.map_voxel_size =
+        declare_parameter("graph_optimizer.map_voxel_size", graph_optimizer.map_voxel_size);
+    graph_optimizer.prior_rotation_sigma =
+        declare_parameter("graph_optimizer.prior_rotation_sigma_rad", graph_optimizer.prior_rotation_sigma);
+    graph_optimizer.prior_translation_sigma =
+        declare_parameter("graph_optimizer.prior_translation_sigma", graph_optimizer.prior_translation_sigma);
+    graph_optimizer.optimization_trigger_interval = declare_parameter("graph_optimizer.optimization_trigger_interval",
+                                                                      graph_optimizer.optimization_trigger_interval);
+    graph_optimizer.min_new_loop_closures_for_optimization =
+        declare_parameter<int64_t>("graph_optimizer.min_new_loop_closures_for_optimization",
+                                   graph_optimizer.min_new_loop_closures_for_optimization);
+    graph_optimizer.unoptimized_trajectory_file =
+        declare_parameter("graph_optimizer.unoptimized_trajectory_file", graph_optimizer.unoptimized_trajectory_file);
+    graph_optimizer.optimized_trajectory_file =
+        declare_parameter("graph_optimizer.optimized_trajectory_file", graph_optimizer.optimized_trajectory_file);
+
+    load_loop_closure_detector_parameters(graph_optimizer.loop_closure_detector_params);
+}
+
+void Mapper3DNode::load_loop_closure_detector_parameters(mapper3d::LoopClosureDetectorParams &loop_closure) {
+    loop_closure.max_correspondence_distance = declare_parameter("loop_closure_detector.max_correspondence_distance",
+                                                                 loop_closure.max_correspondence_distance);
+    loop_closure.num_threads = declare_parameter("loop_closure_detector.num_threads", loop_closure.num_threads);
+    loop_closure.min_final_inliers =
+        declare_parameter<int64_t>("loop_closure_detector.min_final_inliers", loop_closure.min_final_inliers);
+    loop_closure.min_inlier_ratio =
+        declare_parameter("loop_closure_detector.min_inlier_ratio", loop_closure.min_inlier_ratio);
+    loop_closure.x_loop_uncertainty =
+        declare_parameter("loop_closure_detector.x_loop_uncertainty", loop_closure.x_loop_uncertainty);
+    loop_closure.y_loop_uncertainty =
+        declare_parameter("loop_closure_detector.y_loop_uncertainty", loop_closure.y_loop_uncertainty);
+    loop_closure.z_loop_uncertainty =
+        declare_parameter("loop_closure_detector.z_loop_uncertainty", loop_closure.z_loop_uncertainty);
+    loop_closure.roll_loop_uncertainty =
+        mapper3d::utils::deg2rad(declare_parameter("loop_closure_detector.roll_loop_uncertainty_deg",
+                                                   mapper3d::utils::rad2deg(loop_closure.roll_loop_uncertainty)));
+    loop_closure.pitch_loop_uncertainty =
+        mapper3d::utils::deg2rad(declare_parameter("loop_closure_detector.pitch_loop_uncertainty_deg",
+                                                   mapper3d::utils::rad2deg(loop_closure.pitch_loop_uncertainty)));
+    loop_closure.yaw_loop_uncertainty = mapper3d::utils::deg2rad(declare_parameter(
+        "loop_closure_detector.yaw_loop_uncertainty_deg", mapper3d::utils::rad2deg(loop_closure.yaw_loop_uncertainty)));
 }
 
 Mapper3DNode::~Mapper3DNode() {
@@ -86,9 +209,9 @@ void Mapper3DNode::pointcloud_callback(const sensor_msgs::msg::PointCloud2::Shar
 
     const auto map_to_odom_transform = mapper3d_.sensor_pose_map_frame() * mapper3d_.sensor_pose_odom_frame().inverse();
     const auto odom_to_sensor_transform = mapper3d_.sensor_pose_odom_frame();
-    broadcast_transform(map_to_odom_transform, map_frame_id_, odom_frame_id_, msg->header.stamp);
-    broadcast_transform(odom_to_sensor_transform, odom_frame_id_, sensor_frame_id_, msg->header.stamp);
-    // broadcast_transform(map_to_sensor_transform_, map_frame_id_, sensor_frame_id_, msg->header.stamp);
+    broadcast_transform(map_to_odom_transform, params_.map_frame_id, params_.odom_frame_id, msg->header.stamp);
+    broadcast_transform(odom_to_sensor_transform, params_.odom_frame_id, params_.sensor_frame_id, msg->header.stamp);
+    // broadcast_transform(map_to_sensor_transform_, params_.map_frame_id, params_.sensor_frame_id, msg->header.stamp);
 
     notify_visualization_thread();
 
@@ -167,7 +290,7 @@ void Mapper3DNode::publish_pose_trajectory(const std::vector<Sophus::SE3d> &pose
 
     nav_msgs::msg::Path path;
     path.header.stamp = timestamp;
-    path.header.frame_id = map_frame_id_;
+    path.header.frame_id = params_.map_frame_id;
     path.poses.reserve(poses.size());
 
     for (const auto &pose : poses) {
@@ -206,7 +329,7 @@ void Mapper3DNode::publish_loop_closures(const std::vector<Sophus::SE3d> &poses,
     visualization_msgs::msg::MarkerArray loop_closures;
     auto &loop_closure = loop_closures.markers.emplace_back();
 
-    loop_closure.header.frame_id = map_frame_id_;
+    loop_closure.header.frame_id = params_.map_frame_id;
     loop_closure.header.stamp = timestamp;
     loop_closure.ns = "loop_closures";
     loop_closure.id = 0;
@@ -251,14 +374,14 @@ void Mapper3DNode::publish_map(const pcl::PointCloud<pcl::PointXYZ>::ConstPtr &m
     // of the map is made here.
     pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_map(new pcl::PointCloud<pcl::PointXYZ>());
     pcl::VoxelGrid<pcl::PointXYZ> voxel_grid;
-    const float voxel_size = 0.5F;  // TODO: Make configurable
+    const auto voxel_size = static_cast<float>(params_.map_publish_voxel_size);
     voxel_grid.setInputCloud(map);
     voxel_grid.setLeafSize(voxel_size, voxel_size, voxel_size);
     voxel_grid.filter(*downsampled_map);
 
     sensor_msgs::msg::PointCloud2 map_msg;
     pcl::toROSMsg(*downsampled_map, map_msg);
-    map_msg.header.frame_id = map_frame_id_;
+    map_msg.header.frame_id = params_.map_frame_id;
     map_msg.header.stamp = timestamp;
 
     map_pub_->publish(map_msg);
@@ -268,12 +391,7 @@ void Mapper3DNode::publish_map(const pcl::PointCloud<pcl::PointXYZ>::ConstPtr &m
 
 int main(int argc, char **argv) {
     rclcpp::init(argc, argv);
-
-    Mapper3DNodeParams params;
-    auto node = std::make_shared<Mapper3DNode>(params);
-
-    rclcpp::spin(node);
+    rclcpp::spin(std::make_shared<Mapper3DNode>());
     rclcpp::shutdown();
-
     return 0;
 }

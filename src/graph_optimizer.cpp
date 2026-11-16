@@ -42,11 +42,10 @@ GraphOptimizer::GraphOptimizer(const GraphOptimizerParams& params)
     current_keyframe_index_ = 0;
     stop_processing_frames_ = false;
 
-    // TODO: Make these parameters configurable via GraphOptimizerParams
     latest_frame_received_time_ = std::chrono::steady_clock::now();
     latest_optimization_time_ = std::chrono::steady_clock::now();
-    optimization_trigger_interval_ = std::chrono::duration<double>(10.0);  // seconds
-    min_new_loop_closures_for_optimization_ = 10;
+    optimization_trigger_interval_ = std::chrono::duration<double>(params.optimization_trigger_interval);
+    min_new_loop_closures_for_optimization_ = params.min_new_loop_closures_for_optimization;
     num_new_loop_closures_ = 0;
     num_loop_closures_ = 0;
 

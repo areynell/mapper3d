@@ -7,8 +7,11 @@ KITTI ground truth with `evo_ape`. The scores are compared against a baseline sc
 good commit, and the run fails if any metric is more than THRESHOLD worse.
 
 Usage:
-    regression_test.py                          # score every sequence against the baseline
-    regression_test.py --sequences 07           # score one sequence only
+    regression_test.py                                     # score every sequence against the baseline
+    regression_test.py --sequences 07                      # score one sequence only
+    regression_test.py --params-file custom_params.yaml    # run the node with other parameters
+
+Each sequence's directory gets a copy of the parameter file the node ran with, as params.yaml.
 
 To refresh the baseline, run this normally, check the results, and then manually copy
 the run's results.json over test/regression_baseline.json.
@@ -20,6 +23,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -60,6 +64,7 @@ COMPARED_METRICS = ["odometry_ape_rmse", "optimized_ape_rmse"]
 CLOCK_TICKS_PER_SECOND = os.sysconf("SC_CLK_TCK")
 GT_CONVERTER = PACKAGE_DIR / "scripts" / "kitti_gt_to_tum.py"
 NODE_BINARY = WORKSPACE_DIR / "install/mapper3d/lib/mapper3d/mapper3d_node"
+PARAMS_FILE = WORKSPACE_DIR / "install/mapper3d/share/mapper3d/config/mapper3d.yaml"
 
 # The branch a baseline is expected to come from.
 MAIN_BRANCH = "master"
@@ -393,11 +398,14 @@ def run_sequence(sequence, run_dir, inputs, args):
     if convert.returncode != 0:
         return {"status": "ground_truth_failed", "detail": convert.stderr.strip()}
 
+    params_copy = run_dir / "params.yaml"
+    shutil.copyfile(args.params_file, params_copy)
+
     started = time.monotonic()
     node_log = open(run_dir / "node.log", "w")
     # Non-blocking call to start the node so the bag can be played with it listening.
     node = subprocess.Popen(
-        [str(NODE_BINARY)],
+        [str(NODE_BINARY), "--ros-args", "--params-file", str(params_copy.resolve())],
         cwd=run_dir,
         stdout=node_log,
         stderr=subprocess.STDOUT,
@@ -612,7 +620,12 @@ def parse_arguments():
     parser.add_argument("--dataset-root", type=pathlib.Path,
                         default=pathlib.Path.home() / "projects" / "datasets" / "kitti",
                         help="KITTI dataset root, holding ros2/ and original/")
-    return parser.parse_args()
+    parser.add_argument("--params-file", type=pathlib.Path, default=PARAMS_FILE,
+                        help="parameter file for the node (default: the installed config/mapper3d.yaml)")
+    args = parser.parse_args()
+    if not args.params_file.is_file():
+        parser.error(f"no parameter file at {args.params_file}")
+    return args
 
 def print_sequence_result(sequence, result, out_dir):
     """Print the per-sequence summary lines that run_all_sequences prints after each sequence."""
@@ -699,6 +712,7 @@ def main():
     results = describe_current_commit()
     results["created"] = datetime.datetime.now().isoformat(timespec="seconds")
     results["rate"] = PLAYBACK_RATE
+    results["params_file"] = str(args.params_file)
     results["sequences"] = {}
 
     run_all_sequences(args, out_dir, results)

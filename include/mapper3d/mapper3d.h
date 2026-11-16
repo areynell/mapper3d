@@ -25,6 +25,8 @@
 
 namespace mapper3d {
 
+// IMPORTANT: Each field is set from config/mapper3d.yaml by load_local_registration_parameters() in mapper3d_node.cpp.
+// A new field needs a line in both.
 struct LocalRegistrationParams {
     int num_threads = 8;                    // Number of threads for GICP
     int num_neighbors_for_covariance = 20;  // Number of neighbors for covariance estimation
@@ -51,8 +53,11 @@ struct LocalRegistrationParams {
     double max_plausible_sensor_speed = 50.0;  // (m/s), about 180 km/h
 };
 
+// IMPORTANT: Each field is set from config/mapper3d.yaml by load_front_end_parameters() in mapper3d_node.cpp. A new
+// field needs a line in both.
 struct Mapper3DParams {
-    // IMPORTANT: This should be the same as the voxel size used in Mapper3D and LoopClosureDetector
+    // IMPORTANT: This must equal LoopClosureDetectorParams::voxel_size. The node sets both from its voxel_size
+    // parameter.
     double voxel_size = 0.5;  // Voxel resolution for downsampling (m)
 
     double z_height_threshold = -1.0;  // Z height threshold for filtering (m)

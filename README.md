@@ -40,6 +40,12 @@ ros2 launch mapper3d mapper3d_launch.py
 
 Then supply LiDAR point clouds, either from live hardware or from a recorded ROS 2 bag
 
+Every parameter is read at startup from [`config/mapper3d.yaml`](config/mapper3d.yaml). To run with other values, copy the file, edit the copy, and pass it to the launch file.
+
+```bash
+ros2 launch mapper3d mapper3d_launch.py params_file:=/path/to/custom_params.yaml
+```
+
 To see the map and the trajectory, start RViz with the supplied configuration:
 
 ```bash
@@ -131,9 +137,12 @@ Each plot shows the optimized trajectory estimate against the ground-truth traje
 `regression_test.py` runs the KITTI sequences and checks that a change has not made the pipeline's estimated trajectories less accurate. It also records the pipeline's peak memory and CPU usage, and writes a `trajectories.png` per sequence showing trajectory estimates against ground-truth. The results are compared against `test/regression_baseline.json`.
 
 ```bash
-ros2 run mapper3d regression_test.py                  # all sequences, compare to the baseline
-ros2 run mapper3d regression_test.py --sequences xx   # one sequence
+ros2 run mapper3d regression_test.py                                             # all sequences, compare to the baseline
+ros2 run mapper3d regression_test.py --sequences xx                              # one sequence
+ros2 run mapper3d regression_test.py --params-file /path/to/custom_params.yaml   # other parameters
 ```
+
+Each sequence's run directory keeps a copy of the parameter file the node ran with, as `params.yaml`.
 
 Exit code 0 means every sequence passed, 1 means a regression or a failed run, and 2 means data was missing for a sequence. The baseline is stamped with the commit it came from. Each run writes its results to `regression_runs/<timestamp>/results.json` in the workspace, in the same format as the baseline. To refresh the baseline, check out `master`, rebuild, run all sequences, check the printed comparison, and then copy that run's `results.json` over the baseline:
 

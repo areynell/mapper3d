@@ -15,9 +15,11 @@
 
 namespace mapper3d {
 
+// IMPORTANT: Each field is set from config/mapper3d.yaml by load_loop_closure_detector_parameters() in
+// mapper3d_node.cpp. A new field needs a line in both.
 struct LoopClosureDetectorParams {
-    // IMPORTANT: This should be the same as the voxel size used in Mapper3D (for both PCL-based downsampling and
-    // KISS-Matcher)
+    // IMPORTANT: This must equal Mapper3DParams::voxel_size (PCL downsampling and KISS-Matcher). The node sets both
+    // from its voxel_size parameter.
     double voxel_size = 0.5;  // Voxel size for KISS-Matcher (m)
 
     double position_uncertainty = 2.5;                      // Position uncertainty for loop closure detection (m)

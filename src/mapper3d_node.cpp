@@ -4,6 +4,8 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <tf2/convert.h>
 
+#include <Eigen/Geometry>
+#include <cmath>
 #include <cstdint>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <mutex>
@@ -28,6 +30,9 @@ Mapper3DNode::Mapper3DNode(const rclcpp::NodeOptions &options)
       //   map_to_sensor_transform_(Sophus::SE3d()),
       prev_timestamp_(rclcpp::Time(0, 0, RCL_ROS_TIME)) {
     RCLCPP_INFO(this->get_logger(), "Initializing Mapper3DNode...");
+    RCLCPP_INFO(this->get_logger(), "KITTI beam correction: %s, %.3f deg",
+                params_.enable_kitti_beam_correction ? "on" : "off",
+                mapper3d::utils::rad2deg(params_.kitti_vertical_beam_correction_rad));
 
     point_cloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
         params_.point_cloud_sub_topic, params_.sub_queue_size,
@@ -71,6 +76,14 @@ void Mapper3DNode::load_node_parameters(Mapper3DNodeParams &node_params) {
     node_params.map_publish_interval = declare_parameter("node.map_publish_interval", node_params.map_publish_interval);
     node_params.map_publish_voxel_size =
         declare_parameter("node.map_publish_voxel_size", node_params.map_publish_voxel_size);
+    node_params.enable_kitti_beam_correction =
+        declare_parameter("node.enable_kitti_beam_correction", node_params.enable_kitti_beam_correction);
+    // The YAML gives this angle in degrees, and the struct holds radians. rad2deg turns the struct's default into
+    // degrees, so declare_parameter has a fallback in the YAML's unit for when the key is missing. deg2rad then turns
+    // the value declare_parameter returns, from the YAML or that fallback, back into radians.
+    node_params.kitti_vertical_beam_correction_rad = mapper3d::utils::deg2rad(
+        declare_parameter("node.kitti_vertical_beam_correction_angle_deg",
+                          mapper3d::utils::rad2deg(node_params.kitti_vertical_beam_correction_rad)));
 
     load_front_end_parameters(node_params.mapper3d_params);
 }
@@ -84,6 +97,8 @@ void Mapper3DNode::load_front_end_parameters(mapper3d::Mapper3DParams &front_end
     front_end.min_sensor_distance = declare_parameter("front_end.min_sensor_distance", front_end.min_sensor_distance);
     front_end.keyframe_distance_threshold =
         declare_parameter("front_end.keyframe_distance_threshold", front_end.keyframe_distance_threshold);
+    // Degrees in the YAML, radians in the struct. See the comment on kitti_vertical_beam_correction_rad in
+    // load_node_parameters() for why both conversions are needed.
     front_end.keyframe_rotation_threshold = mapper3d::utils::deg2rad(declare_parameter(
         "front_end.keyframe_rotation_threshold_deg", mapper3d::utils::rad2deg(front_end.keyframe_rotation_threshold)));
     front_end.lidar_odometry_trajectory_file =
@@ -93,6 +108,8 @@ void Mapper3DNode::load_front_end_parameters(mapper3d::Mapper3DParams &front_end
     front_end.x_odom_uncertainty = declare_parameter("front_end.x_odom_uncertainty", front_end.x_odom_uncertainty);
     front_end.y_odom_uncertainty = declare_parameter("front_end.y_odom_uncertainty", front_end.y_odom_uncertainty);
     front_end.z_odom_uncertainty = declare_parameter("front_end.z_odom_uncertainty", front_end.z_odom_uncertainty);
+    // Degrees in the YAML, radians in the struct. See the comment on kitti_vertical_beam_correction_rad in
+    // load_node_parameters() for why both conversions are needed.
     front_end.roll_odom_uncertainty = mapper3d::utils::deg2rad(declare_parameter(
         "front_end.roll_odom_uncertainty_deg", mapper3d::utils::rad2deg(front_end.roll_odom_uncertainty)));
     front_end.pitch_odom_uncertainty = mapper3d::utils::deg2rad(declare_parameter(
@@ -164,6 +181,8 @@ void Mapper3DNode::load_loop_closure_detector_parameters(mapper3d::LoopClosureDe
         declare_parameter("loop_closure_detector.y_loop_uncertainty", loop_closure.y_loop_uncertainty);
     loop_closure.z_loop_uncertainty =
         declare_parameter("loop_closure_detector.z_loop_uncertainty", loop_closure.z_loop_uncertainty);
+    // Degrees in the YAML, radians in the struct. See the comment on kitti_vertical_beam_correction_rad in
+    // load_node_parameters() for why both conversions are needed.
     loop_closure.roll_loop_uncertainty =
         mapper3d::utils::deg2rad(declare_parameter("loop_closure_detector.roll_loop_uncertainty_deg",
                                                    mapper3d::utils::rad2deg(loop_closure.roll_loop_uncertainty)));
@@ -202,6 +221,9 @@ void Mapper3DNode::pointcloud_callback(const sensor_msgs::msg::PointCloud2::Shar
 
     const auto cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
     pcl::fromROSMsg(*msg, *cloud);
+    if (params_.enable_kitti_beam_correction) {
+        correct_kitti_vertical_beam_angles(*cloud);
+    }
 
     mapper3d_.spin_once(cloud, msg_time.seconds());
     // map_to_sensor_transform_ = mapper3d_.sensor_pose();
@@ -216,6 +238,35 @@ void Mapper3DNode::pointcloud_callback(const sensor_msgs::msg::PointCloud2::Shar
     notify_visualization_thread();
 
     RCLCPP_INFO(this->get_logger(), "--------------------------------------------------------------------------");
+}
+
+void Mapper3DNode::correct_kitti_vertical_beam_angles(pcl::PointCloud<pcl::PointXYZ> &cloud) const {
+    Timer timer(__func__, LogLevel::Info);
+
+    // Rotate every point up by params_.kitti_vertical_beam_correction_rad to correct for the intrinsic
+    // calibration error of KITTI's Velodyne HDL-64E lidar.
+    for (auto &point : cloud.points) {
+        const Eigen::Vector3d uncorrected_point(point.x, point.y, point.z);
+
+        // Calculate the rotation axis using the cross product between the vector from the sensor origin to the point
+        // (uncorrected_point) and the sensor z-axis (0, 0, 1), which is the lidar's spin axis. The resulting axis is
+        // perpendicular to both the point and the sensor z-axis.
+        const Eigen::Vector3d tilt_axis = uncorrected_point.cross(Eigen::Vector3d::UnitZ());
+
+        // Check that the rotation axis is well defined. If the point lies on or very close to the sensor z-axis, the
+        // cross product will be approximately zero, meaning the rotation axis is undefined.
+        if (tilt_axis.norm() > 1e-6) {
+            // Normalize the rotation axis to obtain a unit vector and create an angle-axis representation of the
+            // rotation. The angle is given by params_.kitti_vertical_beam_correction_rad, and the axis is the
+            // normalized tilt_axis.
+            const Eigen::AngleAxisd vertical_beam_angle_correction(params_.kitti_vertical_beam_correction_rad,
+                                                                   tilt_axis.normalized());
+            const Eigen::Vector3d corrected_point = vertical_beam_angle_correction * uncorrected_point;
+            point.x = static_cast<float>(corrected_point.x());
+            point.y = static_cast<float>(corrected_point.y());
+            point.z = static_cast<float>(corrected_point.z());
+        }
+    }
 }
 
 void Mapper3DNode::broadcast_transform(const Sophus::SE3d &transform, const std::string &frame_id,

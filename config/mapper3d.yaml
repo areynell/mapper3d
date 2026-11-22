@@ -20,6 +20,12 @@ mapper3d_node:
       map_publish_interval: 1.0    # (s)
       map_publish_voxel_size: 0.5  # The published map is downsampled to this (m)
 
+      # This is used to correct an error in the intrinsic calibration of KITTI's Velodyne HDL-64E lidar, first reported in
+      # IMLS-SLAM (Deschaud, ICRA 2018, Sec. VI-B: 0.22 deg) and applied as 0.205 deg in CT-ICP (Dellenbach et al.,
+      # ICRA 2022, Sec. V-A.1). Rotates every point up by params_.kitti_vertical_beam_correction_rad.
+      enable_kitti_beam_correction: true
+      kitti_vertical_beam_correction_angle_deg: 0.205
+
     front_end:
       z_height_threshold: -1.0  # Points below this height in the sensor frame are dropped (m)
       min_sensor_distance: 3.0  # Points closer to the sensor than this are dropped (m)

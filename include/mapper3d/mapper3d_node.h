@@ -37,6 +37,9 @@ struct Mapper3DNodeParams {
     double map_publish_interval = 1.0;
     double map_publish_voxel_size = 0.5;
 
+    bool enable_kitti_beam_correction = true;
+    double kitti_vertical_beam_correction_rad = mapper3d::utils::deg2rad(0.205);
+
     mapper3d::Mapper3DParams mapper3d_params;
 };
 
@@ -57,6 +60,11 @@ class Mapper3DNode : public rclcpp::Node {
     void load_loop_closure_detector_parameters(mapper3d::LoopClosureDetectorParams &loop_closure);
 
     void pointcloud_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+
+    // This corrects an error in the intrinsic calibration of KITTI's Velodyne HDL-64E lidar, first reported in
+    // IMLS-SLAM (Deschaud, ICRA 2018, Sec. VI-B: 0.22 deg) and applied as 0.205 deg in CT-ICP (Dellenbach et al.,
+    // ICRA 2022, Sec. V-A.1). Rotates every point up by params_.kitti_vertical_beam_correction_rad.
+    void correct_kitti_vertical_beam_angles(pcl::PointCloud<pcl::PointXYZ> &cloud) const;
 
     void publish_pose_trajectory(const std::vector<Sophus::SE3d> &poses, const rclcpp::Time &timestamp);
 

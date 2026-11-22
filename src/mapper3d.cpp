@@ -414,10 +414,10 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr Mapper3D::filter_point_cloud(
     cloud_in.swap(cloud_out);
     Logger::debug("Number of points after near sensor removal: " + std::to_string(cloud_in->size()));
 
-    // 3) Remove points below z-height threshold
-    cloud_out = remove_points_below_z(cloud_in, z_height_threshold_);
-    cloud_in.swap(cloud_out);
-    Logger::debug("Number of points after z-height removal: " + std::to_string(cloud_in->size()));
+    // // 3) Remove points below z-height threshold
+    // cloud_out = remove_points_below_z(cloud_in, z_height_threshold_);
+    // cloud_in.swap(cloud_out);
+    // Logger::debug("Number of points after z-height removal: " + std::to_string(cloud_in->size()));
 
     // 4) Downsample the remaining points
     voxel_grid_.setInputCloud(cloud_in);

@@ -104,16 +104,18 @@ evo_ape tum gt_xx_tum.txt optimized_keyframes_tum.txt --align
 
 ## Results on KITTI
 
-The following table and plots show the absolute trajectory error of the optimized keyframe poses (`optimized_keyframes_tum.txt`) against KITTI odometry ground-truth, measured at commit `3aaa692` with `regression_test.py`. The score is the RMSE from `evo_ape tum gt.txt optimized_keyframes_tum.txt --align`. Ground-truth is converted into the LiDAR frame first (`kitti_gt_to_tum.py`).
+The following table and plots show the absolute trajectory error of the optimized keyframe poses (`optimized_keyframes_tum.txt`) against KITTI odometry ground-truth, measured at commit `8065ea4` with `regression_test.py`. The score is the RMSE from `evo_ape tum gt.txt optimized_keyframes_tum.txt --align`. Ground-truth is converted into the LiDAR frame first (`kitti_gt_to_tum.py`).
 
 | Sequence | Length (km) | Point Clouds | Keyframes | Loop closures | Optimized APE (m) |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 00 | 3.72 | 4541 | 2721 | 358 | **1.174** |
-| 02 | 5.07 | 4661 | 3899 | 212 | **4.665** |
-| 05 | 2.21 | 2761 | 1671 | 190 | **0.276** |
-| 07 | 0.69 | 1101 | 505 | 2 | **0.333** |
-| 08 | 3.22 | 4071 | 2354 | 31 | **1.803** |
-| 09 | 1.70 | 1591 | 1252 | 4 | **1.772** |
+| 00 | 3.72 | 4541 | 2719 | 400 | **0.775** |
+| 02 | 5.07 | 4661 | 3901 | 231 | **2.157** |
+| 05 | 2.21 | 2761 | 1674 | 220 | **0.300** |
+| 07 | 0.69 | 1101 | 507 | 5 | **0.300** |
+| 08 | 3.22 | 4071 | 2361 | 53 | **2.015** |
+| 09 | 1.70 | 1591 | 1260 | 5 | **1.101** |
+
+The loop closure counts include the closures that the optimizer rejected as outliers: 2 on 00, 12 on 02 and 2 on 07.
 
 Each plot shows the optimized trajectory estimate against the ground-truth trajectory in the xy plane:
 

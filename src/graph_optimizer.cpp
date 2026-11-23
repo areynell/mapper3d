@@ -3,7 +3,6 @@
 #include <gtsam/nonlinear/GncOptimizer.h>
 #include <gtsam/nonlinear/GncParams.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
-#include <gtsam/nonlinear/Marginals.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/dataset.h>
 #include <pcl/io/ply_io.h>
@@ -25,7 +24,6 @@ GraphOptimizer::GraphOptimizer(const GraphOptimizerParams& params)
     // lm_params_.setVerbosityLM("VALUES");
 
     gnc_params_ = gtsam::GncParams<gtsam::LevenbergMarquardtParams>(lm_params_);
-    // gnc_params_.setLossType(params.loss_type);
 
     // GNC TLS struggles on Kitti 19 sequence, where "standard" g2o GM does not. Why?
     // GNC GM struggles on Kitti 13 sequence, where "standard" g2o GM does not. Why?
@@ -48,9 +46,6 @@ GraphOptimizer::GraphOptimizer(const GraphOptimizerParams& params)
     min_new_loop_closures_for_optimization_ = params.min_new_loop_closures_for_optimization;
     num_new_loop_closures_ = 0;
     num_loop_closures_ = 0;
-
-    // TODO: Implement incremental optimization if needed
-    incremental_optimization_ = false;
 
     map_to_odom_transform_ = Sophus::SE3d();
 
@@ -148,7 +143,7 @@ void GraphOptimizer::process_frames() {
 
                 const auto sensor_pose_odom_frame = frame.pose;
                 const auto sensor_pose_map_frame = map_to_odom_transform_ * sensor_pose_odom_frame;
-                update_vdb_map(frame.downsampled_point_cloud, sensor_pose_map_frame);
+                update_vdb_map(frame.point_cloud, sensor_pose_map_frame);
             }
 
             {
@@ -201,12 +196,6 @@ void GraphOptimizer::add_odometry_constraint(const Sophus::SE3d& pose, const dou
     const gtsam::Symbol current_keyframe_symbol('x', current_keyframe_index_);
     keyframe_timestamps_.emplace_back(timestamp);
 
-    // if (incremental_optimization_) {
-    //     const Sophus::SE3d pose_in_map_frame = map_to_odom_transform_ * pose;
-    //     const gtsam::Pose3 current_pose(gtsam::Rot3(pose_in_map_frame.unit_quaternion()),
-    //                                     gtsam::Point3(pose_in_map_frame.translation()));
-    // }
-
     const gtsam::Pose3 current_pose(gtsam::Rot3(pose.unit_quaternion()), gtsam::Point3(pose.translation()));
 
     if (current_keyframe_index_ == 0) {
@@ -249,9 +238,6 @@ void GraphOptimizer::add_odometry_constraint(const Sophus::SE3d& pose, const dou
                                    gtsam::Point3(online_pose_in_map_frame.translation()));
     online_estimates_.insert(current_keyframe_symbol, online_pose);
 
-    // // Used for visualization
-    // online_poses_.emplace_back(online_pose_in_map_frame);
-
     current_keyframe_index_++;
 }
 
@@ -273,9 +259,6 @@ void GraphOptimizer::add_loop_closure_constraint(size_t prev_keyframe_id, size_t
     const size_t factor_index = graph_.size() - 1;
     loop_closure_factors_.push_back(factor_index);
 
-    // // Used for visualization
-    // loop_closure_edges_.emplace_back(prev_keyframe_id, keyframe_id);
-
     num_new_loop_closures_++;
     num_loop_closures_++;
 }
@@ -292,7 +275,6 @@ void GraphOptimizer::optimize() {
 
     // IMPORTANT: The solve runs unlocked, so a long optimization never blocks the reader threads. This is
     // safe because the frame-processing thread is the sole writer of graph_ and the estimates.
-    // gtsam::GncOptimizer<gtsam::GncParams<gtsam::LevenbergMarquardtParams>> optimizer(graph_, initial_estimates_);
     gtsam::Values optimized_estimates;
     gtsam::Vector factor_weights;
     try {
@@ -322,9 +304,6 @@ void GraphOptimizer::optimize() {
         // poses transformed into the map frame, to provide a more up-to-date estimate for visualization.
         online_estimates_ = optimized_estimates_;
     }
-
-    // online_poses_ = extract_online_poses();
-    // loop_closure_edges_ = extract_loop_closure_edges();
 
     Logger::info_important("Pose graph optimized.");
 
@@ -513,7 +492,7 @@ void GraphOptimizer::generate_optimized_vdb_map() {
     map_vdb_->clear();
 
     for (const auto& frame : processed_frames_) {
-        update_vdb_map(frame.downsampled_point_cloud, frame.pose);
+        update_vdb_map(frame.point_cloud, frame.pose);
     }
 
     map_changed_ = true;
@@ -639,59 +618,6 @@ std::vector<std::pair<size_t, size_t>> GraphOptimizer::extract_loop_closure_edge
     }
     return edges;
 }
-
-pcl::PointCloud<pcl::PointXYZ>::ConstPtr GraphOptimizer::get_map() {
-    std::scoped_lock<std::mutex> lock(map_mutex_);
-    return rebuild_map_snapshot();
-}
-
-gtsam::Values GraphOptimizer::get_unoptimized_poses() {
-    std::scoped_lock<std::mutex> lock(graph_mutex_);
-    return unoptimized_estimates_;
-}
-
-gtsam::Values GraphOptimizer::get_optimized_poses() {
-    std::scoped_lock<std::mutex> lock(graph_mutex_);
-    return optimized_estimates_;
-}
-
-// std::vector<Sophus::SE3d> GraphOptimizer::get_online_poses() {
-//     std::scoped_lock<std::mutex> lock(graph_mutex_);
-//     return online_poses_;
-// }
-
-// std::vector<std::pair<size_t, size_t>> GraphOptimizer::get_loop_closure_edges() {
-//     std::scoped_lock<std::mutex> lock(graph_mutex_);
-//     return loop_closure_edges_;
-// }
-
-gtsam::NonlinearFactorGraph GraphOptimizer::get_graph() {
-    std::scoped_lock<std::mutex> lock(graph_mutex_);
-    return graph_;
-}
-
-// std::vector<Eigen::Matrix<double, 6, 6>> GraphOptimizer::get_pose_covariances() {
-//     std::scoped_lock<std::mutex> lock(graph_mutex_);
-
-//     std::vector<Eigen::Matrix<double, 6, 6>> covariances;
-//     covariances.reserve(optimized_estimates_.size());
-
-//     gtsam::Marginals marginals(graph_, optimized_estimates_);
-
-//     for (const auto& key_value : optimized_estimates_) {
-//         const gtsam::Key key = key_value.key;
-//         if (!optimized_estimates_.exists<gtsam::Pose3>(key)) {
-//             continue;
-//         }
-
-//         // Compute the marginal covariance for the pose
-//         const Eigen::Matrix<double, 6, 6> covariance = marginals.marginalCovariance(key);
-
-//         covariances.push_back(covariance);
-//     }
-
-//     return covariances;
-// }
 
 Sophus::SE3d GraphOptimizer::map_to_odom_transform() {
     std::scoped_lock<std::mutex> lock(map_to_odom_transform_mutex_);

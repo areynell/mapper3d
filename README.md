@@ -1,6 +1,6 @@
 # Mapper3D
 
-`Mapper3D` is a real-time 3D LiDAR pose-graph SLAM system for ROS 2. It combines a front-end LiDAR odometry and local mapping thread, that ensures real-time sensor processing and pose updates, with a backend submap-based loop closure detection and outlier-robust pose-graph optimization thread, that constructs globally consistent 3D maps.
+`Mapper3D` is a real-time 3D LiDAR pose-graph SLAM system for ROS 2. It combines a front-end LiDAR odometry and local mapping thread, that ensures real-time sensor processing and pose updates, with a backend keyframe-based loop closure detection and outlier-robust pose-graph optimization thread, that constructs globally consistent 3D maps.
 
 The SLAM core is written as plain C++ libraries, fully decoupled from ROS 2, with a thin ROS 2 node that wraps it to handle message conversion and publishing. As such, the same core can be embedded in other applications or run offline on recorded data without ROS 2.
 
@@ -14,7 +14,7 @@ The SLAM core is written as plain C++ libraries, fully decoupled from ROS 2, wit
 
 - ROS 2 (ament_cmake), C++17, CMake ≥ 3.22.
 - Eigen3, Sophus, TBB, PCL, OpenCV, GTSAM, OpenVDB, blosc, `small_gicp` (registration), and `kiss_matcher`
-  (global registration for loop closure, with `teaserpp` and `robin`).
+  (global registration for loop closure, with `robin`).
 
 These libraries must already be installed in the system or the workspace. If the build fails because a package
 is missing, this is almost always the cause.
@@ -78,7 +78,7 @@ Solid arrows hand data over; dashed arrows are reads of another thread's data un
 
 - **`Mapper3D`** is the front-end running on the main thread. It filters each incoming point cloud, registers them against a rolling local map of recent point clouds to estimate LiDAR odometry, and passes point clouds to the back-end as keyframes whenever the sensor has moved enough since the last point cloud. After each point cloud, `Mapper3DNode` broadcasts two transforms on `/tf`, stamped with the point cloud's time: `map`→`odom` (the back-end's drift correction) and `odom`→`velodyne` (the LiDAR odometry pose).
 - **`GraphOptimizer`** is the back-end, running on its own thread. It builds a GTSAM pose-graph from the keyframes' odometry and loop closures, optimizes it with outlier-robust GNC, and rebuilds the OpenVDB map at the corrected poses.
-- **`LoopClosureDetector`** finds the loop closures for the back-end. It groups keyframes into submaps, proposes revisited places with ScanContext++, and verifies each one with KISS-Matcher and GICP registration.
+- **`LoopClosureDetector`** finds the loop closures for the back-end. It compares each keyframe with earlier keyframes, proposes revisited places with ScanContext++, and verifies each one with KISS-Matcher and GICP registration.
 
 ## KITTI datasets
 

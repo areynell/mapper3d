@@ -34,7 +34,6 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
-find_package(tf2_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -44,7 +43,6 @@ find_package(visualization_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(Sophus CONFIG REQUIRED)
 find_package(TBB REQUIRED)
-find_package(teaserpp REQUIRED)
 find_package(robin REQUIRED)
 find_package(kiss_matcher REQUIRED)
 find_package(PCL CONFIG REQUIRED)
@@ -76,7 +74,6 @@ target_link_libraries(utils
 add_library(common_dependencies INTERFACE)
 target_link_libraries(common_dependencies INTERFACE
   ${PCL_LIBRARIES}
-  ${OpenCV_LIBS}
   Eigen3::Eigen
   Sophus::Sophus
   utils
@@ -98,8 +95,6 @@ target_link_libraries(loop_closure_detector
   Sophus::Sophus
   Eigen3::Eigen
   TBB::tbb
-  teaserpp::teaser_registration
-  teaserpp::teaser_io
   robin::robin
   kiss_matcher::kiss_matcher_core
   common_dependencies
@@ -128,8 +123,6 @@ target_link_libraries(mapper3d
   Sophus::Sophus
   Eigen3::Eigen
   TBB::tbb
-  teaserpp::teaser_registration
-  teaserpp::teaser_io
   robin::robin
   kiss_matcher::kiss_matcher_core
   common_dependencies

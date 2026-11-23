@@ -2,9 +2,7 @@
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_broadcaster.h>
-#include <tf2_ros/transform_listener.h>
 
 #include <condition_variable>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -28,7 +26,6 @@ struct Mapper3DNodeParams {
     std::string odom_frame_id = "odom";
     std::string sensor_frame_id = "velodyne";
 
-    // std::string point_cloud_sub_topic = "/points_raw";
     std::string point_cloud_sub_topic = "/velodyne_points";
     std::string pose_trajectory_pub_topic = "/pose_trajectory";
     std::string loop_closure_pub_topic = "/loop_closures";
@@ -77,7 +74,6 @@ class Mapper3DNode : public rclcpp::Node {
     void broadcast_transform(const Sophus::SE3d &transform, const std::string &frame_id,
                              const std::string &child_frame_id, const rclcpp::Time &timestamp);
 
-    void enqueue_visualization_data(const rclcpp::Time &timestamp);
     void notify_visualization_thread();
 
     void visualization_thread_func();
@@ -98,13 +94,10 @@ class Mapper3DNode : public rclcpp::Node {
     std::thread visualization_thread_;
     std::mutex visualization_mutex_;
     std::condition_variable visualization_cv_;
-    std::chrono::duration<double> visualization_wait_timeout_;
     bool new_data_available_;
 
     std::chrono::duration<double> map_publish_interval_;
     std::chrono::steady_clock::time_point prev_map_publish_time_;
-
-    // Sophus::SE3d map_to_sensor_transform_;
 
     rclcpp::Time prev_timestamp_;
 };

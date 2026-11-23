@@ -29,7 +29,6 @@ namespace mapper3d {
 // new field needs a line in both.
 struct GraphOptimizerParams {
     int max_iterations = 100;
-    // gtsam::GncLossType loss_type = gtsam::GncLossType::TLS;
     double map_voxel_size = 0.5;  // Voxel resolution of the accumulated map (m)
 
     // Sigmas of the prior on the first keyframe's pose. Its only job is to fix the map frame to the first keyframe. Its
@@ -68,21 +67,7 @@ class GraphOptimizer {
 
     void process_frames();
 
-    gtsam::Values get_unoptimized_poses();
-
-    gtsam::Values get_optimized_poses();
-
     void get_visualization_data(VisualizationData& data);
-
-    // std::vector<Sophus::SE3d> get_online_poses();
-
-    // std::vector<std::pair<size_t, size_t>> get_loop_closure_edges();
-
-    gtsam::NonlinearFactorGraph get_graph();
-
-    pcl::PointCloud<pcl::PointXYZ>::ConstPtr get_map();
-
-    // std::vector<Eigen::Matrix<double, 6, 6>> get_pose_covariances();
 
     Sophus::SE3d map_to_odom_transform();
 
@@ -148,7 +133,6 @@ class GraphOptimizer {
     gtsam::GncParams<gtsam::LevenbergMarquardtParams>::IndexVector known_inlier_factors_;
     std::vector<size_t> degraded_odometry_factors_;
     std::vector<size_t> loop_closure_factors_;
-    bool incremental_optimization_;
 
     bool stop_processing_frames_;
     std::mutex unprocessed_frames_mutex_;
@@ -179,10 +163,6 @@ class GraphOptimizer {
     std::string optimized_trajectory_file_;
 
     std::thread frame_processing_thread_;
-
-    // // Visualization and debugging
-    // std::vector<Sophus::SE3d> online_poses_;
-    // std::vector<std::pair<size_t, size_t>> loop_closure_edges_;
 };
 
 }  // namespace mapper3d

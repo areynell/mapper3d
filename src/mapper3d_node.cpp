@@ -1,8 +1,6 @@
 #include "mapper3d/mapper3d_node.h"
 
-#include <gtsam/slam/BetweenFactor.h>
 #include <pcl_conversions/pcl_conversions.h>
-#include <tf2/convert.h>
 
 #include <Eigen/Geometry>
 #include <cmath>
@@ -27,7 +25,6 @@ Mapper3DNode::Mapper3DNode(const rclcpp::NodeOptions &options)
       run_visualization_thread_(true),
       new_data_available_(false),
       map_publish_interval_(params_.map_publish_interval),
-      //   map_to_sensor_transform_(Sophus::SE3d()),
       prev_timestamp_(rclcpp::Time(0, 0, RCL_ROS_TIME)) {
     RCLCPP_INFO(this->get_logger(), "Initializing Mapper3DNode...");
     RCLCPP_INFO(this->get_logger(), "KITTI beam correction: %s, %.3f deg",
@@ -48,7 +45,6 @@ Mapper3DNode::Mapper3DNode(const rclcpp::NodeOptions &options)
 
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(this);
 
-    visualization_wait_timeout_ = std::chrono::duration<double>(10.0);  // 10 seconds
     visualization_thread_ = std::thread(&Mapper3DNode::visualization_thread_func, this);
 
     RCLCPP_INFO(this->get_logger(), "Mapper3DNode initialized.");
@@ -214,8 +210,6 @@ void Mapper3DNode::pointcloud_callback(const sensor_msgs::msg::PointCloud2::Shar
     RCLCPP_INFO(this->get_logger(), "Point cloud time difference: %.3f seconds", time_diff);
     if (msg_time <= prev_timestamp_) {
         RCLCPP_ERROR(this->get_logger(), "Received point cloud with non-increasing timestamp.");
-        // exit(EXIT_FAILURE);
-        // return;
     }
     prev_timestamp_ = msg_time;
 
@@ -226,14 +220,11 @@ void Mapper3DNode::pointcloud_callback(const sensor_msgs::msg::PointCloud2::Shar
     }
 
     mapper3d_.spin_once(cloud, msg_time.seconds());
-    // map_to_sensor_transform_ = mapper3d_.sensor_pose();
-    // map_to_sensor_transform_ = mapper3d_.sensor_pose_map_frame();
 
     const auto map_to_odom_transform = mapper3d_.sensor_pose_map_frame() * mapper3d_.sensor_pose_odom_frame().inverse();
     const auto odom_to_sensor_transform = mapper3d_.sensor_pose_odom_frame();
     broadcast_transform(map_to_odom_transform, params_.map_frame_id, params_.odom_frame_id, msg->header.stamp);
     broadcast_transform(odom_to_sensor_transform, params_.odom_frame_id, params_.sensor_frame_id, msg->header.stamp);
-    // broadcast_transform(map_to_sensor_transform_, params_.map_frame_id, params_.sensor_frame_id, msg->header.stamp);
 
     notify_visualization_thread();
 
@@ -362,8 +353,6 @@ void Mapper3DNode::publish_pose_trajectory(const std::vector<Sophus::SE3d> &pose
         path.poses.emplace_back(pose_stamped);
     }
 
-    assert(path.poses.size() == values.size());
-
     // RCLCPP_DEBUG(this->get_logger(), "Publishing pose graph");
     pose_trajectory_pub_->publish(path);
 }
@@ -415,7 +404,7 @@ void Mapper3DNode::publish_loop_closures(const std::vector<Sophus::SE3d> &poses,
 }
 
 void Mapper3DNode::publish_map(const pcl::PointCloud<pcl::PointXYZ>::ConstPtr &map, const rclcpp::Time &timestamp) {
-    Timer timer(__func__, LogLevel::Debug);
+    Timer timer(__func__, LogLevel::Info);
 
     if (!map || map_pub_->get_subscription_count() == 0) {
         return;

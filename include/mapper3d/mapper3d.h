@@ -1,12 +1,8 @@
 #pragma once
 
-#include <pcl/filters/radius_outlier_removal.h>
-#include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <pcl/registration/gicp.h>
-#include <pcl/visualization/pcl_visualizer.h>
 
 #include <fstream>
 #include <kiss_matcher/KISSMatcher.hpp>
@@ -93,16 +89,6 @@ class Mapper3D {
     Sophus::SE3d sensor_pose_odom_frame() const;
     Sophus::SE3d sensor_pose_map_frame() const;
 
-    const pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_point_cloud() const;
-
-    gtsam::Values get_unoptimized_poses();
-
-    gtsam::Values get_optimized_poses();
-
-    gtsam::NonlinearFactorGraph get_graph();
-
-    pcl::PointCloud<pcl::PointXYZ>::ConstPtr get_map();
-
     void get_graph_visualization_data(VisualizationData &data);
 
    private:
@@ -176,10 +162,9 @@ class Mapper3D {
     size_t registration_failure_count_;
     size_t coasted_point_cloud_count_;
     size_t relocalization_count_;
-    size_t map_reset_count_;
 
-    pcl::PointCloud<pcl::PointXYZ>::Ptr prev_downsampled_point_cloud_;
-    pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_point_cloud_;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr prev_point_cloud_;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud_;
 
     Sophus::SE3d prev_sensor_pose_odom_frame_;
     Sophus::SE3d sensor_pose_odom_frame_;

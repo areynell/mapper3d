@@ -22,9 +22,6 @@ struct LoopClosureDetectorParams {
     // from its voxel_size parameter.
     double voxel_size = 0.5;  // Voxel size for KISS-Matcher (m)
 
-    double position_uncertainty = 2.5;                      // Position uncertainty for loop closure detection (m)
-    double orientation_uncertainty = utils::deg2rad(40.0);  // Orientation uncertainty for loop closure detection (rad)
-
     // GICP (small_gicp) refines KISS-Matcher's answer. A point is used in the alignment process only when its nearest
     // point in the other scan is closer than max_correspondence_distance.
     double max_correspondence_distance = 1.0;  // About twice voxel_size (m)
@@ -72,12 +69,6 @@ class LoopClosureDetector {
                                                       const pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud,
                                                       const Sophus::SE3d& initial_transform_guess);
 
-    void update_submaps(const Frame& frame);
-
-    void visualize_point_cloud_alignment(const Submap& prev_submap, const Frame& frame,
-                                         const Sophus::SE3d& relative_pose, const size_t image_width,
-                                         const size_t image_height, const float view_range_x, const float view_range_y);
-
     Eigen::Matrix<double, 6, 6> loop_closure_covariance_;
 
     kiss_matcher::KISSMatcherConfig global_registration_config_;
@@ -87,8 +78,6 @@ class LoopClosureDetector {
     size_t min_final_inliers_;
     double min_inlier_ratio_;
 
-    Submap current_submap_;  // Current submap being built
-    std::unordered_map<size_t, Submap> submaps_;
     std::unordered_map<size_t, Frame> frames_;
 
     SCManager scan_context_manager_;  // ScanContext manager for loop closure detection
